@@ -28,6 +28,7 @@ class App(tk.Tk):
         self.title(APP_NAME)
         self.geometry("900x600")
         apply_theme()
+        self.style = ttk.Style()
 
         self.settings = load_settings()
         self.properties = None
@@ -84,6 +85,7 @@ class App(tk.Tk):
         self._build_details_tab()
         self._build_backups_tab()
         self._build_manage_tab()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_prefs_tab(self):
         pad = {"padx": 10, "pady": 6}
@@ -133,16 +135,27 @@ class App(tk.Tk):
             columns=("name", "size", "modified"),
             show="headings",
         )
-        self.backups_tree.heading("name", text="Name")
-        self.backups_tree.heading("size", text="Size")
-        self.backups_tree.heading("modified", text="Modified")
+        self.backups_tree.heading("name", text="Name", command=lambda col="name": self._sort_backups(col))
+        self.backups_tree.heading("size", text="Size", command=lambda col="size": self._sort_backups(col))
+        self.backups_tree.heading(
+            "modified", text="Modified", command=lambda col="modified": self._sort_backups(col)
+        )
         self.backups_tree.column("name", width=320, anchor="w")
         self.backups_tree.column("size", width=120, anchor="e")
         self.backups_tree.column("modified", width=200, anchor="w")
         self.backups_tree.pack(fill="both", expand=True, padx=8, pady=8)
         self.backups_tree.bind("<<TreeviewSelect>>", self._on_backup_select)
 
-        self.backups_empty = ttk.Label(self.tab_backups, text="No backups. Click New Backup to backup current world.")
+        self.backups_metadata = {}
+        self.backups_sort_column = None
+        self.backups_sort_reverse = False
+
+        self.style.configure("BackupsEmpty.TLabel", background="white")
+        self.backups_empty = ttk.Label(
+            self.tab_backups,
+            text="No backups. Click New Backup to backup current world.",
+            style="BackupsEmpty.TLabel",
+        )
         self.backups_empty.place(relx=0.5, rely=0.5, anchor="center")
 
         actions = ttk.Frame(self.tab_backups)
@@ -213,6 +226,7 @@ class App(tk.Tk):
         self.console_input = ttk.Entry(input_frame)
         self.console_input.pack(side="left", fill="x", expand=True, padx=6)
         self.console_input.bind("<Return>", self._send_console_input)
+        self._set_console_enabled(False)
 
         players_frame = ttk.Frame(self.tab_manage)
         players_frame.pack(fill="both", expand=False, padx=8, pady=(0, 8))
@@ -378,8 +392,8 @@ class App(tk.Tk):
         return total
 
     def _refresh_backups(self):
-        for item in self.backups_tree.get_children():
-            self.backups_tree.delete(item)
+        self.backups_tree.delete(*self.backups_tree.get_children())
+        self.backups_metadata.clear()
         backups_dir = self.backups_dir_var.get().strip()
         if not backups_dir:
             self.backups_status.config(text="Set the backups folder to list backups.")
@@ -398,12 +412,21 @@ class App(tk.Tk):
         for name in files:
             path = os.path.join(backups_dir, name)
             try:
-                size = self._format_size(self._path_size(path))
-                modified = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(path)))
+                size_bytes = self._path_size(path)
+                size = self._format_size(size_bytes)
+                modified_ts = os.path.getmtime(path)
+                modified = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(modified_ts))
             except OSError:
+                size_bytes = 0
+                modified_ts = 0
                 size = "-"
                 modified = "-"
-            self.backups_tree.insert("", "end", values=(name, size, modified))
+            item = self.backups_tree.insert("", "end", values=(name, size, modified))
+            self.backups_metadata[item] = {
+                "name": name,
+                "size": size_bytes,
+                "modified_ts": modified_ts,
+            }
         self.backups_status.config(text=f"{len(files)} backup(s) found.")
         self._set_backup_buttons_state(False)
         if files:
@@ -411,6 +434,29 @@ class App(tk.Tk):
         else:
             self.backups_empty.lift()
             self.backups_empty.place(relx=0.5, rely=0.5, anchor="center")
+
+    def _sort_backups(self, column):
+        items = list(self.backups_tree.get_children())
+        if not items:
+            return
+        sort_data = []
+        for item in items:
+            meta = self.backups_metadata.get(item, {})
+            if column == "size":
+                key = meta.get("size", 0)
+            elif column == "modified":
+                key = meta.get("modified_ts", 0)
+            else:
+                key = meta.get("name", self.backups_tree.set(item, "name")).lower()
+            sort_data.append((key, item))
+        reverse = False
+        if self.backups_sort_column == column:
+            reverse = not self.backups_sort_reverse
+        self.backups_sort_column = column
+        self.backups_sort_reverse = reverse
+        sort_data.sort(key=lambda pair: pair[0], reverse=reverse)
+        for index, (_, item) in enumerate(sort_data):
+            self.backups_tree.move(item, "", index)
 
     def _on_backup_select(self, _event):
         selection = self.backups_tree.selection()
@@ -473,11 +519,53 @@ class App(tk.Tk):
         if not chosen_name:
             return
         base_name = os.path.join(backups_dir, chosen_name)
-        try:
-            shutil.make_archive(base_name, "zip", source)
+        progress_dialog = self._show_progress_dialog("Creating backup…")
+
+        def worker():
+            error = None
+            try:
+                shutil.make_archive(base_name, "zip", source)
+            except Exception as exc:
+                error = exc
+            finally:
+                self.after(50, lambda: self._backup_finished(progress_dialog, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _backup_finished(self, dialog, error):
+        if not dialog.winfo_exists():
+            return
+        progress_bar = getattr(dialog, "progress_bar", None)
+        if progress_bar:
+            progress_bar.stop()
+        dialog.destroy()
+        if error:
+            messagebox.showerror(APP_NAME, f"Backup failed: {error}")
+        else:
             self._refresh_backups()
-        except Exception as exc:
-            messagebox.showerror(APP_NAME, f"Backup failed: {exc}")
+
+    def _show_progress_dialog(self, message):
+        dialog = tk.Toplevel(self)
+        dialog.title(APP_NAME)
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text=message, anchor="w", justify="left").pack(fill="x", anchor="w")
+        progress_bar = ttk.Progressbar(frame, mode="indeterminate")
+        progress_bar.pack(fill="x", pady=(10, 0))
+        progress_bar.start(20)
+        dialog.progress_bar = progress_bar
+
+        dialog.update_idletasks()
+        width = max(320, dialog.winfo_reqwidth())
+        height = dialog.winfo_reqheight() + 20
+        x = self.winfo_rootx() + (self.winfo_width() // 2) - (width // 2)
+        y = self.winfo_rooty() + (self.winfo_height() // 2) - (height // 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        dialog.grab_set()
+        return dialog
 
     def _delete_backup(self):
         path = self._selected_backup_path()
@@ -529,6 +617,15 @@ class App(tk.Tk):
         if not server_dir:
             messagebox.showwarning(APP_NAME, "Please set the server folder in Preferences.")
             return
+        worlds_root = os.path.join(server_dir, "worlds")
+        world_name = self._world_name(server_dir)
+        previous_world = os.path.join(worlds_root, world_name)
+        old_world = os.path.join(worlds_root, f"Old_{world_name}")
+        if os.path.isdir(old_world):
+            shutil.rmtree(old_world)
+        if os.path.isdir(previous_world):
+            os.makedirs(worlds_root, exist_ok=True)
+            shutil.move(previous_world, old_world)
         if not confirm_dialog(
             self,
             "Restore selected backup? This may overwrite data.",
@@ -564,9 +661,12 @@ class App(tk.Tk):
                 shutil.unpack_archive(path, os.path.join(server_dir, "worlds"))
             elif os.path.isdir(path):
                 dest = os.path.join(server_dir, "worlds")
-                if os.path.isdir(dest):
-                    shutil.rmtree(dest)
-                shutil.copytree(path, dest)
+                basename = os.path.basename(path.rstrip(os.sep))
+                target = os.path.join(dest, basename)
+                if os.path.isdir(target):
+                    shutil.rmtree(target)
+                os.makedirs(dest, exist_ok=True)
+                shutil.copytree(path, target)
             else:
                 messagebox.showinfo(APP_NAME, "Unsupported backup format.")
                 return
@@ -624,6 +724,7 @@ class App(tk.Tk):
         self.btn_server_refresh.config(state="normal")
         self.status_running_var.set("Running")
         self._append_console("Server started.\n")
+        self._set_console_enabled(True)
 
         threading.Thread(target=self._server_reader, daemon=True).start()
 
@@ -665,6 +766,7 @@ class App(tk.Tk):
             self.btn_server_stop.config(state="disabled")
             self.btn_server_refresh.config(state="disabled")
             self.status_running_var.set("Stopped")
+            self._set_console_enabled(False)
         self.after(200, self._poll_server_output)
 
     def _append_console(self, text):
@@ -672,6 +774,12 @@ class App(tk.Tk):
         self.console_text.insert("end", text)
         self.console_text.see("end")
         self.console_text.config(state="disabled")
+
+    def _set_console_enabled(self, enabled):
+        state = "normal" if enabled else "disabled"
+        self.console_input.config(state=state)
+        if not enabled:
+            self.console_input.delete(0, tk.END)
 
     def _redirect_console_input(self, event):
         if event.char and event.char.isprintable():
@@ -722,6 +830,33 @@ class App(tk.Tk):
         self.status_running_var.set("Stopped")
         self.live_players.clear()
         self._refresh_live_players()
+        self._set_console_enabled(False)
+
+    def _on_close(self):
+        self._shutdown_server_process()
+        self.destroy()
+
+    def _shutdown_server_process(self):
+        proc = self.server_process
+        if not proc or proc.poll() is not None:
+            return
+        try:
+            if proc.stdin:
+                proc.stdin.write("stop\n")
+                proc.stdin.flush()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
     def _build_whitelist_tab(self):
         self.whitelist_list = tk.Listbox(self.tab_whitelist)
@@ -944,4 +1079,3 @@ class App(tk.Tk):
         errors.extend(validate_properties_data(props.data))
 
         show_validation_dialog(self, errors)
-

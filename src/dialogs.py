@@ -54,49 +54,53 @@ def prompt_string(parent, label_text, initial_value=""):
     return result["value"]
 
 
-def confirm_dialog(parent, message, *, min_width=520, wraplength=520, extra_width=200):
-    dialog = tk.Toplevel(parent)
-    dialog.title(APP_NAME)
-    dialog.transient(parent)
-    dialog.withdraw()
+class YesNoDialog(tk.Toplevel):
+    def __init__(self, parent, message, *, min_width=420, wraplength=420, extra_width=0):
+        super().__init__(parent)
+        self.title(APP_NAME)
+        self.transient(parent)
+        self.withdraw()
+        self.value = False
 
-    frame = ttk.Frame(dialog, padding=12)
-    frame.pack(fill="both", expand=True)
+        frame = ttk.Frame(self, padding=12)
+        frame.pack(fill="both", expand=True)
 
-    label = ttk.Label(frame, text=message, anchor="w", justify="left", wraplength=wraplength)
-    label.pack(fill="x", anchor="w")
+        label = ttk.Label(frame, text=message, anchor="w", justify="left", wraplength=wraplength)
+        label.pack(fill="x", anchor="w")
 
-    buttons = ttk.Frame(frame)
-    buttons.pack(fill="x", pady=(16, 0))
-    result = {"value": False}
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(16, 0))
 
-    def on_yes():
-        result["value"] = True
-        dialog.destroy()
+        def on_yes():
+            self.value = True
+            self.destroy()
 
-    def on_no():
-        result["value"] = False
-        dialog.destroy()
+        def on_no():
+            self.value = False
+            self.destroy()
 
-    ttk.Button(buttons, text="Yes", command=on_yes).pack(side="right", padx=4)
-    ttk.Button(buttons, text="No", command=on_no).pack(side="right")
+        ttk.Button(buttons, text="Yes", command=on_yes).pack(side="right", padx=4)
+        ttk.Button(buttons, text="No", command=on_no).pack(side="right")
 
-    dialog.update_idletasks()
-    width = max(min_width, dialog.winfo_reqwidth()) + extra_width
-    height = dialog.winfo_reqheight() + 40
-    x = parent.winfo_rootx() + (parent.winfo_width() // 2) - (width // 2)
-    y = parent.winfo_rooty() + (parent.winfo_height() // 2) - (height // 2)
-    dialog.geometry(f"{width}x{height}+{x}+{y}")
+        self.update_idletasks()
+        width = max(min_width, self.winfo_reqwidth()) + extra_width
+        height = self.winfo_reqheight() + 40
+        x = parent.winfo_rootx() + (parent.winfo_width() // 2) - (width // 2)
+        y = parent.winfo_rooty() + (parent.winfo_height() // 2) - (height // 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
 
-    dialog.bind("<Return>", lambda _e: on_yes())
-    dialog.bind("<Escape>", lambda _e: on_no())
+        self.bind("<Return>", lambda _e: on_yes())
+        self.bind("<Escape>", lambda _e: on_no())
 
-    dialog.deiconify()
-    dialog.wait_visibility()
-    dialog.grab_set()
+        self.deiconify()
+        self.wait_visibility()
+        self.grab_set()
+        parent.wait_window(self)
 
-    parent.wait_window(dialog)
-    return result["value"]
+
+def confirm_dialog(parent, message, *, min_width=420, wraplength=420, extra_width=0):
+    dialog = YesNoDialog(parent, message, min_width=min_width, wraplength=wraplength, extra_width=extra_width)
+    return dialog.value
 
 
 def show_validation_dialog(parent, errors):
