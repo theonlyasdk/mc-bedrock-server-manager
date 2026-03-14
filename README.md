@@ -22,7 +22,10 @@ But it's quite easy to run it yourself.
 4. In the Preferences tab, choose the folder where you've downloaded the Bedrock server folder and choose or create a backups folder.
 5. Edit `server.properties` if needed, and click start server and enjoy!
 
-## Web manager (beta)
+## Web manager (experimental)
+The Web Manager is an **experimental** Flask + Bootstrap UI that runs alongside the desktop app.
+Use it with caution: operations like backup creation/restores/deletes can modify files on disk.
+
 1. Install the auxiliary web stack with `pip install flask`.
 2. Open the new **Web Manager** tab, configure the host/port to taste, and click **Start Web Manager**.
 3. Once running, the **Open Web UI** button opens the Bootstrap-powered interface. You can also browse to `http://<host>:<port>`.
