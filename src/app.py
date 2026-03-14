@@ -1,13 +1,17 @@
+import json
 import os
 import queue
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
 import tkinter as tk
+import urllib.request
 import webbrowser
 import zipfile
+from collections import deque
 from tkinter import filedialog, messagebox, ttk
 
 from constants import APP_AUTHOR, APP_LICENSE, APP_NAME
@@ -20,6 +24,7 @@ from server_validation import (
 )
 from settings_store import load_settings, save_settings
 from theme import apply_theme
+from WebManager import WebManagerServer
 
 
 class App(tk.Tk):
@@ -33,8 +38,23 @@ class App(tk.Tk):
         self.settings = load_settings()
         self.properties = None
         self.server_process = None
+        self.server_start_time = None
+        self.server_start_monotonic = None
         self.server_queue = queue.Queue()
         self.live_players = set()
+        self.web_logs = deque(maxlen=200)
+        self.cached_public_ip = "-"
+        self.cached_local_ip = self._get_local_ip()
+        threading.Thread(target=self._fetch_public_ip, daemon=True).start()
+        self.web_manager_host_var = tk.StringVar()
+        self.web_manager_port_var = tk.StringVar()
+        self.web_manager_status_var = tk.StringVar(value="Web manager stopped.")
+        self.web_manager = WebManagerServer(
+            status_provider=self._web_manager_status_payload,
+            command_handler=self._web_manager_command_handler,
+        )
+        self.web_backup_in_progress = False
+        self.web_backup_error = None
 
         self._build_menu()
         self._build_tabs()
@@ -75,16 +95,19 @@ class App(tk.Tk):
         self.tab_details = ttk.Frame(self.tabs)
         self.tab_backups = ttk.Frame(self.tabs)
         self.tab_manage = ttk.Frame(self.tabs)
+        self.tab_web_manager = ttk.Frame(self.tabs)
 
         self.tabs.add(self.tab_prefs, text="Preferences")
         self.tabs.add(self.tab_details, text="Server Properties")
         self.tabs.add(self.tab_backups, text="Backups")
         self.tabs.add(self.tab_manage, text="Server Management")
+        self.tabs.add(self.tab_web_manager, text="Web Manager")
 
         self._build_prefs_tab()
         self._build_details_tab()
         self._build_backups_tab()
         self._build_manage_tab()
+        self._build_web_manager_tab()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_prefs_tab(self):
@@ -196,6 +219,8 @@ class App(tk.Tk):
         self.status_gamemode_var = tk.StringVar(value="-")
         self.status_max_players_var = tk.StringVar(value="-")
         self.status_connected_var = tk.StringVar(value="0")
+        self.status_uptime_var = tk.StringVar(value="Uptime: -")
+        self.status_local_url_var = tk.StringVar(value="Local URL: -")
 
         ttk.Label(status_frame, text="State:").grid(row=0, column=0, sticky="w", padx=8, pady=4)
         ttk.Label(status_frame, textvariable=self.status_running_var).grid(row=0, column=1, sticky="w", padx=8, pady=4)
@@ -208,6 +233,9 @@ class App(tk.Tk):
         ttk.Label(status_frame, textvariable=self.status_max_players_var).grid(row=1, column=1, sticky="w", padx=8, pady=4)
         ttk.Label(status_frame, text="Connected:").grid(row=1, column=2, sticky="w", padx=8, pady=4)
         ttk.Label(status_frame, textvariable=self.status_connected_var).grid(row=1, column=3, sticky="w", padx=8, pady=4)
+        
+        ttk.Label(status_frame, textvariable=self.status_uptime_var).grid(row=1, column=4, sticky="w", padx=8, pady=4)
+        ttk.Label(status_frame, textvariable=self.status_local_url_var).grid(row=1, column=5, sticky="w", padx=8, pady=4)
         status_frame.columnconfigure(5, weight=1)
 
         console_frame = ttk.Frame(self.tab_manage)
@@ -246,14 +274,411 @@ class App(tk.Tk):
         self._build_ops_tab()
         self._build_players_tab()
 
+    def _build_web_manager_tab(self):
+        pad = {"padx": 8, "pady": 6}
+        container = ttk.Frame(self.tab_web_manager)
+        container.pack(fill="both", expand=True, padx=8, pady=8)
+
+        settings_frame = ttk.LabelFrame(container, text="Web manager settings")
+        settings_frame.pack(fill="x", pady=(0, 12))
+
+        ttk.Label(settings_frame, text="Host:").grid(row=0, column=0, sticky="w", **pad)
+        ttk.Entry(settings_frame, textvariable=self.web_manager_host_var).grid(row=0, column=1, sticky="ew", **pad)
+        ttk.Label(settings_frame, text="Port:").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Entry(settings_frame, textvariable=self.web_manager_port_var).grid(row=1, column=1, sticky="ew", **pad)
+        settings_frame.columnconfigure(1, weight=1)
+
+        control_frame = ttk.Frame(container)
+        control_frame.pack(fill="x", pady=(0, 12))
+        self.btn_web_manager_start = ttk.Button(control_frame, text="Start Web Manager", command=self._start_web_manager)
+        self.btn_web_manager_stop = ttk.Button(
+            control_frame, text="Stop Web Manager", command=self._stop_web_manager, state="disabled"
+        )
+        self.btn_web_manager_open = ttk.Button(
+            control_frame, text="Open Web UI", command=self._open_web_manager, state="disabled"
+        )
+        self.btn_web_manager_start.pack(side="left", padx=4)
+        self.btn_web_manager_stop.pack(side="left", padx=4)
+        self.btn_web_manager_open.pack(side="right", padx=4)
+
+        self.web_manager_status_label = ttk.Label(container, textvariable=self.web_manager_status_var)
+        self.web_manager_status_label.pack(fill="x", pady=(0, 4))
+
+    def _start_web_manager(self):
+        if self.web_manager.is_running():
+            messagebox.showinfo(APP_NAME, "Web manager is already running.")
+            return
+        host = self.web_manager_host_var.get().strip() or "0.0.0.0"
+        port_text = self.web_manager_port_var.get().strip()
+        try:
+            port = int(port_text) if port_text else 5050
+            if not (1 <= port <= 65535):
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning(APP_NAME, "Enter a valid port between 1 and 65535.")
+            return
+        try:
+            self.web_manager.start(host, port)
+        except RuntimeError as exc:
+            messagebox.showerror(APP_NAME, str(exc))
+            return
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Failed to start web manager: {exc}")
+            return
+        self.settings["web_manager_host"] = host
+        self.settings["web_manager_port"] = port
+        save_settings(self.settings)
+        self._update_web_manager_status()
+
+    def _stop_web_manager(self):
+        self.web_manager.stop()
+        self._update_web_manager_status()
+
+    def _open_web_manager(self):
+        if not self.web_manager.is_running():
+            messagebox.showwarning(APP_NAME, "Web manager is not running.")
+            return
+        webbrowser.open(self.web_manager.url())
+
+    def _update_web_manager_status(self):
+        running = self.web_manager.is_running()
+        host = self.web_manager.host if running else (self.web_manager_host_var.get().strip() or "127.0.0.1")
+        port = self.web_manager.port if running else self.settings.get("web_manager_port", 5050)
+        status = "Running" if running else "Stopped"
+        self.web_manager_status_var.set(f"{status} - {host}:{port}")
+        self.btn_web_manager_start.config(state="disabled" if running else "normal")
+        self.btn_web_manager_stop.config(state="normal" if running else "disabled")
+        self.btn_web_manager_open.config(state="normal" if running else "disabled")
+
+    def _web_manager_command_handler(self, action: str, data: dict = None):
+        actions = {
+            "start_server": self._start_server,
+            "stop_server": self._stop_server,
+            "refresh_players": self._refresh_players,
+        }
+        if action == "send_command" and data:
+            cmd = data.get("command")
+            if cmd:
+                initial_len = len(self.web_logs)
+                self.after(0, lambda: self._web_send_command(cmd))
+                
+                # Strict wait: wait for echo (> cmd) AND server response
+                start_wait = time.time()
+                while time.time() - start_wait < 10: # 10s timeout
+                    if len(self.web_logs) > initial_len + 1:
+                        return {"success": True, "status": "processed"}
+                    time.sleep(0.1)
+                return {"success": True, "status": "timeout"}
+        if action == "update_property" and data:
+            key = data.get("key")
+            value = data.get("value")
+            if key and value is not None:
+                self.after(0, lambda: self._web_update_property(key, value))
+                return {"scheduled": True}
+        if action == "delete_backup" and data:
+            name = data.get("name")
+            if name:
+                self.after(0, lambda: self._web_delete_backup(name))
+                return {"scheduled": True}
+        if action == "restore_backup" and data:
+            name = data.get("name")
+            if name:
+                self.after(0, lambda: self._web_restore_backup(name))
+                return {"scheduled": True}
+        if action == "new_backup" and data:
+            name = data.get("name")
+            if name:
+                self.after(0, lambda: self._web_create_backup(name))
+                return {"scheduled": True}
+
+        target = actions.get(action)
+        if not target:
+            return {"error": f"Unknown action {action}"}
+        
+        self.after(0, target)
+
+        # Wait for confirmation if starting or stopping
+        if action == "start_server":
+            start_wait = time.time()
+            while time.time() - start_wait < 15: # 15s timeout
+                # Check if process is running and has produced some logs
+                if self.server_process and self.server_process.poll() is None:
+                    if len(self.web_logs) > 2: # "Server started" + actual output
+                        return {"success": True, "status": "running"}
+                time.sleep(0.5)
+            return {"success": True, "status": "starting"}
+            
+        if action == "stop_server":
+            start_wait = time.time()
+            while time.time() - start_wait < 15: # 15s timeout
+                # Check if process is fully stopped
+                if not self.server_process or self.server_process.poll() is not None:
+                    return {"success": True, "status": "stopped"}
+                time.sleep(0.5)
+            return {"success": True, "status": "stopping"}
+
+        return {"scheduled": True}
+
+    def _web_send_command(self, cmd):
+        if not self.server_process or self.server_process.poll() is not None:
+            return
+        try:
+            self.server_process.stdin.write(cmd + "\n")
+            self.server_process.stdin.flush()
+            # Log the sent command
+            self.web_logs.append(f"> {cmd}\n")
+            self._append_console(f"> {cmd}\n")
+        except Exception:
+            pass
+
+    def _web_update_property(self, key, value):
+        if not self.properties: return
+        self.properties.set_value(key, value)
+        try:
+            self.properties.save()
+            self._refresh_properties()
+        except Exception:
+            pass
+
+    def _web_delete_backup(self, name):
+        backups_dir = self.backups_dir_var.get().strip()
+        if not backups_dir: return
+        path = os.path.join(backups_dir, name)
+        try:
+            if os.path.exists(path):
+                if os.path.isdir(path): shutil.rmtree(path)
+                else: os.remove(path)
+                self._refresh_backups()
+        except Exception:
+            pass
+
+    def _web_restore_backup(self, name):
+        backups_dir = self.backups_dir_var.get().strip()
+        if not backups_dir: return
+        path = os.path.join(backups_dir, name)
+        if not os.path.exists(path): return
+        self._restore_backup_logic(path)
+
+    def _web_create_backup(self, name):
+        if self.web_backup_in_progress:
+            self.web_backup_error = "A backup is already in progress."
+            return
+        backups_dir = self.backups_dir_var.get().strip()
+        if not backups_dir:
+            self.web_backup_error = "Backups folder is not set."
+            return
+        server_dir = self.server_dir_var.get().strip()
+        if not server_dir:
+            self.web_backup_error = "Server folder is not set."
+            return
+        if not os.path.isdir(server_dir):
+            self.web_backup_error = "Server folder does not exist."
+            return
+        os.makedirs(backups_dir, exist_ok=True)
+        source = os.path.join(server_dir, "worlds")
+        if not os.path.isdir(source):
+            source = server_dir
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        world_name = self._world_name(server_dir)
+        safe_name = (name or "").strip()
+        if not safe_name:
+            safe_name = f"mcbak-{timestamp}_{world_name}"
+        base_name = os.path.join(backups_dir, safe_name)
+        self.web_backup_in_progress = True
+
+        def worker():
+            error = None
+            try:
+                shutil.make_archive(base_name, "zip", source)
+            except Exception as exc:
+                error = exc
+            finally:
+                self.after(0, lambda: self._web_backup_finished(error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _web_backup_finished(self, error):
+        self.web_backup_in_progress = False
+        if error:
+            self.web_backup_error = f"Backup failed: {error}"
+        self._refresh_backups()
+
+    def _restore_backup_logic(self, path):
+        # Simplified restore logic for web call
+        server_dir = self.server_dir_var.get().strip()
+        if not server_dir: return
+        worlds_root = os.path.join(server_dir, "worlds")
+        world_name = self._world_name(server_dir)
+        previous_world = os.path.join(worlds_root, world_name)
+        old_world = os.path.join(worlds_root, f"Old_{world_name}")
+        try:
+            if os.path.isdir(old_world): shutil.rmtree(old_world)
+            if os.path.isdir(previous_world):
+                os.makedirs(worlds_root, exist_ok=True)
+                shutil.move(previous_world, old_world)
+            if path.endswith(".zip"):
+                shutil.unpack_archive(path, os.path.join(server_dir, "worlds"))
+            elif os.path.isdir(path):
+                dest = os.path.join(server_dir, "worlds")
+                basename = os.path.basename(path.rstrip(os.sep))
+                target = os.path.join(dest, basename)
+                if os.path.isdir(target): shutil.rmtree(target)
+                os.makedirs(dest, exist_ok=True)
+                shutil.copytree(path, target)
+            self.after(0, self._refresh_backups)
+        except Exception:
+            pass
+
+    def _web_manager_status_payload(self):
+        running = bool(self.server_process and self.server_process.poll() is None)
+        if running and not self.server_start_time:
+            self.server_start_time = time.time()
+            self.server_start_monotonic = time.monotonic()
+        uptime_seconds = self._get_uptime_seconds() if running else 0
+        props = self.properties.data if self.properties and self.properties.data else {}
+        
+        backups = []
+        backups_dir = self.backups_dir_var.get().strip()
+        if backups_dir and os.path.isdir(backups_dir):
+            for name in sorted(os.listdir(backups_dir)):
+                path = os.path.join(backups_dir, name)
+                try:
+                    mtime = os.path.getmtime(path)
+                    size = self._path_size(path)
+                    backups.append({
+                        "name": name,
+                        "size": self._format_size(size),
+                        "modified": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime)),
+                        "timestamp": mtime
+                    })
+                except OSError: pass
+
+        server_dir = self.server_dir_var.get().strip()
+        ops_names = []
+        if server_dir and os.path.isdir(server_dir):
+            xuid_name_map = self._build_xuid_name_map(server_dir)
+            permissions = self._load_json_list(self._server_path("permissions.json"))
+            for entry in permissions:
+                raw_name = entry.get("name", "")
+                xuid = (entry.get("xuid") or "").strip()
+                name = (raw_name or "").strip()
+                if (not name or name.lower() == "unknown") and xuid:
+                    name = xuid_name_map.get(xuid, name)
+                if name:
+                    ops_names.append(name)
+
+        bedrock = {
+            "running": running,
+            "port": props.get("server-port", "-"),
+            "gamemode": props.get("gamemode", "-"),
+            "connected": len(self.live_players),
+            "max_players": props.get("max-players", "-"),
+        }
+        web_running = self.web_manager.is_running()
+        web_host = self.web_manager.host if web_running else (self.web_manager_host_var.get().strip() or "127.0.0.1")
+        web_port = self.web_manager.port if web_running else self.settings.get("web_manager_port", 5050)
+        manager_url = f"http://{web_host}:{web_port}"
+        backup_error = self.web_backup_error
+        self.web_backup_error = None
+        return {
+            "bedrock": bedrock,
+            "web_manager": {
+                "running": web_running,
+                "host": web_host,
+                "port": web_port,
+                "url": manager_url,
+            },
+            "players": self._resolve_live_players_for_web(server_dir),
+            "operators": sorted(set(ops_names)),
+            "properties": props,
+            "backups": backups,
+            "logs": list(self.web_logs),
+            "network": {
+                "local_ip": self.cached_local_ip,
+                "public_ip": self.cached_public_ip,
+                "port": props.get("server-port", "19132")
+            },
+            "server_start_time": self.server_start_time if running else None,
+            "server_uptime_seconds": uptime_seconds,
+            "backup_in_progress": self.web_backup_in_progress,
+            "backup_error": backup_error,
+        }
+
+    def _update_uptime(self):
+        if self.server_process and self.server_process.poll() is None:
+            if not self.server_start_time:
+                self.server_start_time = time.time()
+            if not self.server_start_monotonic:
+                self.server_start_monotonic = time.monotonic()
+            delta = self._get_uptime_seconds()
+            self.status_uptime_var.set(f"Uptime: {self._format_duration(delta)}")
+            self.after(1000, self._update_uptime)
+        else:
+            self.server_start_time = None
+            self.server_start_monotonic = None
+            self.status_uptime_var.set("Uptime: -")
+
+    def _get_uptime_seconds(self):
+        if not self.server_process or self.server_process.poll() is not None:
+            return 0
+        if self.server_start_monotonic:
+            return max(0, int(time.monotonic() - self.server_start_monotonic))
+        if self.server_start_time:
+            return max(0, int(time.time() - self.server_start_time))
+        return 0
+
+    def _format_duration(self, seconds):
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        s = seconds % 60
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    def _get_local_ip(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # Connect to an external IP address (Google's public DNS server)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+        except socket.error:
+            local_ip = "127.0.0.1" # Fallback to loopback if no connection
+        finally:
+            s.close()
+        return local_ip
+
+    def _fetch_public_ip(self):
+        services = ["https://api.ipify.org", "https://ident.me", "https://icanhazip.com"]
+        for service in services:
+            try:
+                with urllib.request.urlopen(service, timeout=5) as response:
+                    ip = response.read().decode("utf-8").strip()
+                    if ip:
+                        self.cached_public_ip = ip
+                        self.after(0, self._update_server_status)
+                        return
+            except Exception:
+                continue
+        self.cached_public_ip = "-"
+        self.after(0, self._update_server_status)
+
     def _load_preferences_into_ui(self):
         self.server_dir_var.set(self.settings.get("server_dir", ""))
         self.backups_dir_var.set(self.settings.get("backups_dir", ""))
+        self.web_manager_host_var.set(self.settings.get("web_manager_host", "127.0.0.1"))
+        self.web_manager_port_var.set(str(self.settings.get("web_manager_port", 5050)))
         self._validate_settings()
+        self._update_web_manager_status()
 
     def _save_preferences_from_ui(self):
         self.settings["server_dir"] = self.server_dir_var.get().strip()
         self.settings["backups_dir"] = self.backups_dir_var.get().strip()
+        host = self.web_manager_host_var.get().strip() or "127.0.0.1"
+        port_value = self.settings.get("web_manager_port", 5050)
+        try:
+            port_value = int(self.web_manager_port_var.get().strip())
+        except ValueError:
+            pass
+        self.settings["web_manager_host"] = host
+        self.settings["web_manager_port"] = port_value
         save_settings(self.settings)
 
     def _choose_server_dir(self):
@@ -723,10 +1148,15 @@ class App(tk.Tk):
         self.btn_server_stop.config(state="normal")
         self.btn_server_refresh.config(state="normal")
         self.status_running_var.set("Running")
+        self.server_start_time = time.time()
+        self.server_start_monotonic = time.monotonic()
+        self.web_logs.clear()
+        self.web_logs.append("Server started.\n")
         self._append_console("Server started.\n")
         self._set_console_enabled(True)
 
         threading.Thread(target=self._server_reader, daemon=True).start()
+        self._update_uptime()
 
     def _server_reader(self):
         try:
@@ -758,6 +1188,7 @@ class App(tk.Tk):
                         self.live_players.clear()
                         self._refresh_live_players()
                     continue
+                self.web_logs.append(item)
                 self._append_console(item)
         except queue.Empty:
             pass
@@ -766,6 +1197,9 @@ class App(tk.Tk):
             self.btn_server_stop.config(state="disabled")
             self.btn_server_refresh.config(state="disabled")
             self.status_running_var.set("Stopped")
+            self.server_start_time = None
+            self.server_start_monotonic = None
+            self.status_uptime_var.set("Uptime: -")
             self._set_console_enabled(False)
         self.after(200, self._poll_server_output)
 
@@ -824,6 +1258,9 @@ class App(tk.Tk):
             self.server_process.terminate()
         except Exception:
             pass
+        self.server_start_time = None
+        self.server_start_monotonic = None
+        self.status_uptime_var.set("Uptime: -")
         self.btn_server_start.config(state="normal")
         self.btn_server_stop.config(state="disabled")
         self.btn_server_refresh.config(state="disabled")
@@ -833,6 +1270,7 @@ class App(tk.Tk):
         self._set_console_enabled(False)
 
     def _on_close(self):
+        self._stop_web_manager()
         self._shutdown_server_process()
         self.destroy()
 
@@ -908,6 +1346,35 @@ class App(tk.Tk):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
+    def _build_xuid_name_map(self, server_dir):
+        mapping = {}
+        allowlist = self._load_json_list(self._server_path("allowlist.json"))
+        for entry in allowlist:
+            name = (entry.get("name") or "").strip()
+            xuid = (entry.get("xuid") or "").strip()
+            if xuid and name:
+                mapping[xuid] = name
+        players_json = os.path.join(server_dir, "players.json")
+        if os.path.exists(players_json):
+            data = self._load_json_list(players_json)
+            for entry in data:
+                name = (entry.get("name") or "").strip()
+                xuid = (entry.get("xuid") or "").strip()
+                if xuid and name:
+                    mapping.setdefault(xuid, name)
+        return mapping
+
+    def _resolve_live_players_for_web(self, server_dir):
+        xuid_name_map = self._build_xuid_name_map(server_dir) if server_dir else {}
+        resolved = []
+        seen = set()
+        for name in sorted(self.live_players):
+            resolved_name = xuid_name_map.get(name, name)
+            if resolved_name and resolved_name not in seen:
+                resolved.append(resolved_name)
+                seen.add(resolved_name)
+        return resolved
+
     def _refresh_players(self):
         self.whitelist_list.delete(0, tk.END)
         self.ops_list.delete(0, tk.END)
@@ -919,6 +1386,7 @@ class App(tk.Tk):
 
         allowlist = self._load_json_list(self._server_path("allowlist.json"))
         permissions = self._load_json_list(self._server_path("permissions.json"))
+        xuid_name_map = self._build_xuid_name_map(server_dir)
 
         for entry in allowlist:
             name = entry.get("name", "unknown")
@@ -927,8 +1395,13 @@ class App(tk.Tk):
             self.whitelist_list.insert(tk.END, display)
 
         for entry in permissions:
-            name = entry.get("name", "unknown")
-            xuid = entry.get("xuid", "")
+            raw_name = entry.get("name", "")
+            xuid = (entry.get("xuid") or "").strip()
+            name = (raw_name or "").strip()
+            if (not name or name.lower() == "unknown") and xuid:
+                name = xuid_name_map.get(xuid, name)
+            if not name:
+                name = "unknown"
             perm = entry.get("permission", "operator")
             display = f"{name} [{perm}] ({xuid})" if xuid else f"{name} [{perm}]"
             self.ops_list.insert(tk.END, display)
@@ -1059,6 +1532,8 @@ class App(tk.Tk):
         self.status_port_var.set(port)
         self.status_gamemode_var.set(gamemode)
         self.status_max_players_var.set(max_players)
+        self.cached_local_ip = self._get_local_ip()
+        self.status_local_url_var.set(f"Local URL: {self.cached_local_ip}:{port}")
 
     def _validate_server_menu(self):
         server_dir = self.server_dir_var.get().strip()

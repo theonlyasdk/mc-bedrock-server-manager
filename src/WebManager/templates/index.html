@@ -1,0 +1,1160 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MC Bedrock Server Manager</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+      crossorigin="anonymous"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inconsolata:wght@200..900&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --sidebar-width: 280px;
+        --navbar-height: 58px;
+        --common-border-radius: 13px;
+        --bs-body-font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+        --bs-font-monospace: "Inconsolata", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      }
+      html, body {
+        height: 100vh;
+        width: 100vw;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        font-family: var(--bs-body-font-family);
+      }
+
+      /* Transitions */
+      .nav-link, .btn, .nav-link::before {
+        transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), 
+                    opacity 0.4s ease, 
+                    filter 0.4s ease, 
+                    box-shadow 0.4s ease, 
+                    border-radius 0.4s ease !important;
+      }
+
+      a {
+        color: #4dabff !important;
+        text-decoration: none;
+      }
+      a:hover {
+        color: #80c4ff !important;
+        text-decoration: none !important;
+      }
+      code, pre, .font-monospace {
+        font-family: var(--bs-font-monospace) !important;
+        background-color: rgba(255, 255, 255, 0.1);
+        padding: 0.2rem 0.4rem;
+        border-radius: 4px;
+      }
+
+      .navbar {
+        height: var(--navbar-height);
+        z-index: 1050;
+        flex-shrink: 0;
+        background-color: #212529 !important;
+      }
+      .navbar-brand {
+        font-size: clamp(0.9rem, 4vw, 1.25rem);
+      }
+      .navbar .container-fluid {
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
+      }
+      #wrapper {
+        display: flex;
+        width: 100%;
+        flex: 1;
+        overflow: hidden;
+        position: relative;
+      }
+      #sidebar-wrapper {
+        width: var(--sidebar-width);
+        min-width: var(--sidebar-width);
+        height: 100%;
+        z-index: 1040;
+        overflow-y: auto;
+        border-right: 1px solid rgba(255, 255, 255, 0.1);
+        background-color: #212529;
+        transform: translateX(0);
+        transition: transform 0.3s ease-in-out, box-shadow 0.3s ease, width 0.3s ease, min-width 0.3s ease;
+        will-change: transform;
+      }
+      #sidebar-wrapper .list-group {
+        width: 100%;
+      }
+      #page-content-wrapper {
+        flex: 1;
+        height: 100%;
+        overflow-y: auto;
+        min-width: 0;
+      }
+      #wrapper.toggled #sidebar-wrapper {
+        transform: translateX(calc(-1 * var(--sidebar-width)));
+        width: 0;
+        min-width: 0;
+        border-right: 0;
+      }
+      
+      @media (max-width: 767.98px) {
+        #sidebar-wrapper {
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: var(--sidebar-width);
+          min-width: var(--sidebar-width);
+          transform: translateX(calc(-1 * var(--sidebar-width)));
+          box-shadow: none;
+        }
+        #wrapper.toggled #sidebar-wrapper {
+          transform: translateX(0);
+          box-shadow: 10px 0 30px rgba(0,0,0,0.5);
+          width: var(--sidebar-width);
+          min-width: var(--sidebar-width);
+        }
+      }
+
+      /* Global Squircle Border Radius */
+      .btn, .nav-link, .nav-link::before, .card, .table-container, .modal-content, .modal-header, .modal-footer, #serverLogs, .input-group, .form-control {
+        border-radius: var(--common-border-radius) !important;
+        corner-shape: squircle;
+      }
+
+      .modal-header {
+        border-bottom-left-radius: 0 !important;
+        border-bottom-right-radius: 0 !important;
+      }
+      .modal-footer {
+        border-top-left-radius: 0 !important;
+        border-top-right-radius: 0 !important;
+      }
+
+      .btn:active {
+        filter: brightness(0.8) !important;
+      }
+
+      /* Fix input group corners overridden by global rule */
+      .input-group > .form-control {
+        border-top-right-radius: 0 !important;
+        border-bottom-right-radius: 0 !important;
+      }
+      .input-group > .btn {
+        border-top-left-radius: 0 !important;
+        border-bottom-left-radius: 0 !important;
+      }
+
+      .modal-content {
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6) !important;
+        border: 1px solid rgba(255, 255, 255, 0.15) !important;
+        overflow: hidden;
+      }
+
+      /* Sidebar button background sliding animation */
+      .nav-link {
+        cursor: pointer;
+        position: relative;
+        overflow: hidden;
+        z-index: 1;
+        background-color: transparent !important;
+        border: none !important;
+        transition: color 0.3s ease, background-color 0.3s ease !important;
+      }
+      .nav-link::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background-color: var(--bs-primary);
+        z-index: -1;
+        transform: translateX(-100%);
+        opacity: 0;
+        transition: transform 0.3s ease-in-out, opacity 0.3s ease !important;
+      }
+      .nav-link.active::before {
+        transform: translateX(0);
+        opacity: 1;
+      }
+      .nav-link.active {
+        color: #fff !important;
+      }
+      .nav-link:not(.active):hover {
+        background-color: rgba(255, 255, 255, 0.05) !important;
+        color: #fff !important;
+      }
+
+      .card, .table-container {
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+      }
+      .table-container {
+        overflow-x: visible !important;
+      }
+      .table-flush,
+      .table-flush .table-responsive,
+      .table-flush table {
+        border: 0 !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
+        width: 100%;
+      }
+      .table-flush {
+        overflow: visible !important;
+      }
+      .table-flush .table-responsive {
+        overflow-x: auto;
+      }
+      .table-hover tbody tr:hover {
+        cursor: pointer;
+      }
+      .table-hover tbody tr, .table-hover tbody tr:hover, .table-hover tbody tr:active {
+        transition: none !important;
+      }
+      .table-hover tbody tr:active {
+        background-color: rgba(0, 0, 0, 0.4) !important;
+      }
+      .table-col-borders th,
+      .table-col-borders td {
+        border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
+        white-space: nowrap;
+      }
+      .table-col-borders th:last-child,
+      .table-col-borders td:last-child {
+        border-right: 0 !important;
+      }
+      .table-col-borders > :not(caption) > * > * {
+        border-bottom-color: rgba(255, 255, 255, 0.08) !important;
+      }
+      .edit-icon {
+        visibility: hidden;
+      }
+      tr:hover .edit-icon {
+        visibility: visible;
+      }
+      
+      /* iOS-like zoom bounce animation for modals */
+      .modal.fade .modal-dialog {
+        transform: scale(0.8);
+      }
+      .modal.show .modal-dialog {
+        transform: scale(1);
+      }
+      
+      /* Hamburger button customization */
+      #menu-toggle {
+        border: none !important;
+        box-shadow: none !important;
+        background: transparent !important;
+        color: rgba(255, 255, 255, 0.8) !important;
+      }
+      #menu-toggle:hover {
+        background: transparent !important;
+        color: #fff !important;
+        transform: scale(1.05);
+      }
+      #menu-toggle:active {
+        transform: scale(0.95);
+      }
+
+      #serverLogs {
+        font-family: var(--bs-font-monospace) !important;
+        font-size: 0.85rem;
+        background-color: #0d1117;
+        color: #e6edf3;
+        max-height: 400px;
+        overflow-y: auto;
+        padding: 1rem;
+        border-radius: 0 0 0 0 !important;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      #serverLogs::-webkit-scrollbar, #page-content-wrapper::-webkit-scrollbar, #sidebar-wrapper::-webkit-scrollbar {
+        width: 8px;
+      }
+      #serverLogs::-webkit-scrollbar-thumb, #page-content-wrapper::-webkit-scrollbar-thumb, #sidebar-wrapper::-webkit-scrollbar-thumb {
+        background: #484f58;
+        border-radius: 4px;
+      }
+      #serverLogs::-webkit-scrollbar-thumb:hover, #page-content-wrapper::-webkit-scrollbar-thumb:hover, #sidebar-wrapper::-webkit-scrollbar-thumb:hover {
+        background: #6e7681;
+      }
+
+      /* Entrance and Exit animations */
+      @keyframes zoomFadeIn {
+        from { opacity: 0; transform: scale(0); }
+        to { opacity: 1; transform: scale(1); }
+      }
+      @keyframes zoomFadeOut {
+        from { opacity: 1; transform: scale(1); }
+        to { opacity: 0; transform: scale(0); }
+      }
+
+      .animate-in {
+        animation: zoomFadeIn 0.3s linear forwards;
+      }
+      .animate-out {
+        animation: zoomFadeOut 0.3s linear forwards;
+      }
+
+      .page-header {
+        background-color: #212529;
+        border-bottom: 1px solid #6c757d;
+        padding: 0.5rem 1rem;
+        margin-bottom: 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 60px !important;
+        max-height: 60px !important;
+        height: 60px !important;
+      }
+
+      @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+      .spin {
+        display: inline-block;
+        animation: spin 1s linear infinite;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Top Navbar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark border-bottom border-secondary">
+      <div class="container-fluid">
+        <button class="btn btn-outline-secondary me-2" id="menu-toggle" title="Toggle Sidebar">
+          <i class="bi bi-list"></i>
+        </button>
+        <span class="navbar-brand fw-bold mb-0 h1 text-truncate" style="margin-left: 0;">MC Bedrock Server Manager</span>
+        <div class="ms-auto d-flex align-items-center gap-2">
+          <button class="btn btn-sm btn-outline-primary" id="refreshBtn">
+            <i class="bi bi-arrow-clockwise me-md-1"></i> <span class="d-none d-md-inline">Refresh</span>
+          </button>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Toast Container for Errors -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1100;">
+      <div id="errorToast" class="toast align-items-center text-bg-danger border-0" role="alert" aria-live="assertive" aria-atomic="true">
+        <div class="d-flex">
+          <div class="toast-body" id="errorToastBody">
+            An internal error occurred.
+          </div>
+          <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+      </div>
+    </div>
+
+    <div id="wrapper">
+      <!-- Sidebar -->
+      <div class="bg-dark border-end border-secondary" id="sidebar-wrapper">
+        <div class="p-3">
+          <nav class="nav nav-pills flex-column gap-1">
+            <a class="nav-link active" id="nav-details" onclick="showSection('details')">
+              <i class="bi bi-speedometer2 me-2"></i>Dashboard
+            </a>
+            <a class="nav-link text-white" id="nav-properties" onclick="showSection('properties')">
+              <i class="bi bi-gear-fill me-2"></i>Server Properties
+            </a>
+            <a class="nav-link text-white" id="nav-backups" onclick="showSection('backups')">
+              <i class="bi bi-archive-fill me-2"></i>World Backups
+            </a>
+          </nav>
+        </div>
+      </div>
+
+      <!-- Page Content -->
+      <div id="page-content-wrapper">
+        <div class="container-fluid p-0 pb-5">
+          <!-- Server Details Section -->
+          <section id="section-details">
+            <div class="page-header">
+              <h2 class="h4 mb-0">Server Overview</h2>
+              <div id="serverActions">
+                <button id="toggleServerBtn" class="btn btn-primary shadow-sm">
+                  <span class="spinner-border spinner-border-sm d-none" role="status"></span>
+                  <span class="btn-text">Loading...</span>
+                </button>
+              </div>
+            </div>
+            <div class="section-body p-4">
+
+            <!-- Top Row Stats -->
+            <div class="row g-2 g-md-4 mb-4">
+              <div class="col-md-3">
+                <div class="card h-100 shadow-sm border-0 bg-dark-subtle">
+                  <div class="card-body">
+                    <div class="text-muted small text-uppercase fw-bold mb-2">Status</div>
+                    <div class="d-flex align-items-center gap-2">
+                      <div id="statusDot" class="rounded-circle bg-secondary" style="width: 12px; height: 12px;"></div>
+                      <h3 class="h2 mb-0" id="serverState">Loading...</h3>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-3">
+                <!-- Server Uptime Card -->
+                <div id="uptimeCard" class="card h-100 shadow-sm border-0 bg-dark-subtle">
+                  <div class="card-body">
+                    <div class="text-muted small text-uppercase fw-bold mb-2">Server Uptime</div>
+                    <div class="d-flex align-items-center justify-content-between">
+                      <h3 class="h2 mb-0" id="serverUptime">--:--:--</h3>
+                      <i class="bi bi-clock-history h2 text-success opacity-50 mb-0"></i>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-3">
+                <div class="card h-100 shadow-sm border-0 bg-dark-subtle">
+                  <div class="card-body">
+                    <div class="text-muted small text-uppercase fw-bold mb-2">Online Players</div>
+                    <div class="d-flex align-items-center justify-content-between">
+                      <h3 class="h2 mb-0" id="playerCount">0</h3>
+                      <i class="bi bi-people-fill h2 text-primary opacity-50 mb-0"></i>
+                    </div>
+                    <div class="text-muted small" id="playerLimit">Max: -</div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-3">
+                <div class="card h-100 shadow-sm border-0 bg-dark-subtle">
+                  <div class="card-body">
+                    <div class="text-muted small text-uppercase fw-bold mb-2">Gamemode</div>
+                    <div class="d-flex align-items-center justify-content-between">
+                      <h3 class="h2 mb-0 text-capitalize" id="serverGamemode">-</h3>
+                      <i class="bi bi-controller h2 text-warning opacity-50 mb-0"></i>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="row g-2 g-md-4 mt-2">
+              <div class="col-md-8">
+                <div class="card shadow-sm border-0 mb-4">
+                  <div class="card-header bg-transparent border-secondary py-3">
+                    <h5 class="card-title mb-0">Active Players</h5>
+                  </div>
+                  <div class="card-body p-0">
+                    <ul class="list-group list-group-flush" id="playerList">
+                      <!-- Players populated by JS -->
+                    </ul>
+                    <div id="noPlayersMsg" class="p-4 text-center text-muted">
+                      <i class="bi bi-person-x h1 d-block mb-3 opacity-25"></i>
+                      No players currently online.
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Server Logs Card -->
+                <div id="logsContainer" class="card shadow-sm border-0 d-none animate-in">
+                  <div class="card-header bg-transparent border-secondary py-3">
+                    <h5 class="card-title mb-0">Server Logs</h5>
+                  </div>
+                  <div id="serverLogs">
+                    <!-- Logs populated by JS -->
+                  </div>
+                  <div class="card-footer bg-dark border-top border-secondary p-2">
+                    <div class="input-group">
+                      <input type="text" id="commandInput" class="form-control bg-dark border-secondary text-white" placeholder="Enter server command..." autocomplete="off">
+                      <button class="btn btn-secondary px-3" id="sendCommandBtn" type="button">
+                        <i class="bi bi-send-fill"></i>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-4">
+                <!-- Server Address Card -->
+                <div id="connectionDetailsContainer" class="card shadow-sm border-0 mb-4 d-none">
+                  <div class="card-header bg-transparent border-secondary py-3">
+                    <h5 class="card-title mb-0">Server Address</h5>
+                  </div>
+                  <div class="card-body">
+                    <ul class="list-group list-group-flush bg-transparent">
+                      <li class="list-group-item bg-transparent border-secondary px-0 d-flex justify-content-between">
+                        <span class="text-muted">Local IP</span>
+                        <span class="fw-bold" id="localIp">-</span>
+                      </li>
+                      <li class="list-group-item bg-transparent border-secondary px-0 d-flex justify-content-between">
+                        <span class="text-muted">Game Port</span>
+                        <span class="fw-bold" id="gamePort">-</span>
+                      </li>
+                      <li class="list-group-item bg-transparent border-0 px-0 mt-2">
+                        <div class="text-muted small mb-1">Local URL</div>
+                        <span id="localUrl" class="text-primary fw-bold text-break font-monospace">-</span>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+
+                <!-- Web Interface Card -->
+                <div class="card shadow-sm border-0">
+                  <div class="card-header bg-transparent border-secondary py-3">
+                    <h5 class="card-title mb-0">Web Interface</h5>
+                  </div>
+                  <div class="card-body">
+                    <ul class="list-group list-group-flush bg-transparent">
+                      <li class="list-group-item bg-transparent border-secondary px-0 d-flex justify-content-between">
+                        <span class="text-muted">Host</span>
+                        <span class="fw-bold" id="webHost">-</span>
+                      </li>
+                      <li class="list-group-item bg-transparent border-secondary px-0 d-flex justify-content-between">
+                        <span class="text-muted">Port</span>
+                        <span class="fw-bold" id="webPort">-</span>
+                      </li>
+                      <li class="list-group-item bg-transparent border-secondary px-0 mt-2">
+                        <div class="text-muted small mb-1">Local URL</div>
+                        <a href="#" id="webLocalUrl" target="_blank" class="text-primary text-decoration-none fw-bold text-break font-monospace">-</a>
+                      </li>
+                      <li class="list-group-item bg-transparent border-0 px-0 mt-2">
+                        <div class="text-muted small mb-1">Access URL</div>
+                        <a href="#" id="webUrl" target="_blank" class="text-primary text-decoration-none fw-bold text-break font-monospace">-</a>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+            </div>
+          </section>
+
+          <!-- Server Properties Section -->
+          <section id="section-properties" class="d-none">
+            <div class="page-header">
+              <h2 class="h4 mb-0">Server Properties</h2>
+              <div class="text-muted small" id="propsCount">0 items</div>
+            </div>
+            <div class="section-body">
+                <div class="table-container table-flush">
+                  <div class="table-responsive">
+                    <table class="table table-dark table-hover mb-0 align-middle px-2 table-col-borders">
+                      <thead class="table-dark">
+                        <tr>
+                          <th>Property</th>
+                          <th>Value</th>
+                          <th class="d-none d-md-table-cell">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody id="propertiesTableBody">
+                        <!-- Properties populated by JS -->
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+            </div>
+          </section>
+
+          <!-- Backups Section -->
+          <section id="section-backups" class="d-none">
+            <div class="page-header">
+              <h2 class="h4 mb-0">World Backups</h2>
+              <button class="btn btn-primary shadow-sm" id="newBackupBtn">
+                <i class="bi bi-plus-lg me-1"></i>New Backup
+              </button>
+            </div>
+            <div class="section-body">
+              <div class="table-section-flush">
+                <div class="table-container table-flush">
+                  <div class="table-responsive">
+                    <table class="table table-dark table-hover mb-0 align-middle table-col-borders">
+                      <thead class="table-dark">
+                        <tr>
+                          <th>Name</th>
+                          <th>Size</th>
+                          <th>Modified</th>
+                          <th class="text-start">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody id="backupsTableBody">
+                        <!-- Backups populated by JS -->
+                      </tbody>
+                    </table>
+                  </div>
+                  <div id="noBackupsMsg" class="p-5 text-center text-muted d-none">
+                    <i class="bi bi-cloud-slash h1 d-block mb-3 opacity-25"></i>
+                    No backups found.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Extra bottom spacing for mobile -->
+          <div class="d-block d-md-none" style="height: 80px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modals -->
+    <!-- Edit Property Modal -->
+    <div class="modal fade" id="editPropertyModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Edit Property</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <form id="editPropertyForm">
+              <div class="mb-3">
+                <label for="propKey" class="form-label">Property Name</label>
+                <input type="text" class="form-control" id="propKey" readonly disabled>
+              </div>
+              <div class="mb-3">
+                <label for="propValue" class="form-label">Value</label>
+                <input type="text" class="form-control" id="propValue" required>
+              </div>
+            </form>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-link text-white text-decoration-none" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" id="savePropertyBtn">OK</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- New Backup Modal -->
+    <div class="modal fade" id="newBackupModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Create New Backup</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <form id="newBackupForm">
+              <div class="mb-3">
+                <label for="backupName" class="form-label">Backup Name</label>
+                <input type="text" class="form-control" id="backupName" required>
+                <div class="form-text">Enter a name for your world backup.</div>
+              </div>
+            </form>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-link text-white text-decoration-none" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" id="confirmNewBackupBtn">Create Backup</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Backup Progress Modal -->
+    <div class="modal fade" id="backupProgressModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-sm modal-dialog-centered">
+        <div class="modal-content border-secondary">
+          <div class="modal-header">
+            <h5 class="modal-title">Creating Backup</h5>
+          </div>
+          <div class="modal-body">
+            <div class="small text-muted mb-2">Please keep this page open while the backup is running.</div>
+            <div class="progress" role="progressbar" aria-label="Backup progress">
+              <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" style="width: 100%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirmation Modal -->
+    <div class="modal fade" id="confirmModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="confirmTitle">Confirm Action</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p id="confirmText"></p>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-link text-white text-decoration-none" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" id="confirmActionBtn">Confirm</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Disconnected Modal -->
+    <div class="modal fade" id="disconnectedModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content border-danger">
+          <div class="modal-header bg-danger text-white">
+            <h5 class="modal-title"><i class="bi bi-exclamation-triangle-fill me-2"></i>Connection Lost</h5>
+          </div>
+          <div class="modal-body">
+            <p>The manager server appears to be disconnected. Would you like to try to reconnect?</p>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-primary" id="reconnectBtn">
+              <i class="bi bi-plug-fill me-1"></i>Reconnect Now
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script
+      src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+      crossorigin="anonymous"
+    ></script>
+    <script>
+      let isServerRunning = false;
+      let isRequestInFlight = false;
+      let isDisconnected = false;
+      let currentSection = 'details';
+      let propertiesData = {};
+      let backupsData = [];
+      let lastLogs = "";
+      let serverStartTime = null;
+      let uptimeInterval = null;
+
+      // Bootstrap Instances
+      const editPropertyModal = new bootstrap.Modal(document.getElementById('editPropertyModal'));
+      const newBackupModal = new bootstrap.Modal(document.getElementById('newBackupModal'));
+      const backupProgressModal = new bootstrap.Modal(document.getElementById('backupProgressModal'));
+      const confirmModal = new bootstrap.Modal(document.getElementById('confirmModal'));
+      const disconnectedModal = new bootstrap.Modal(document.getElementById('disconnectedModal'));
+      const errorToast = new bootstrap.Toast(document.getElementById('errorToast'));
+      let backupProgressVisible = false;
+      
+      function showError(msg) {
+        document.getElementById('errorToastBody').textContent = msg || "An internal error occurred.";
+        errorToast.show();
+      }
+
+      // Selectors
+      const sidebarToggle = document.getElementById('menu-toggle');
+      const wrapper = document.getElementById('wrapper');
+      const toggleServerBtn = document.getElementById('toggleServerBtn');
+      const refreshBtn = document.getElementById('refreshBtn');
+      const reconnectBtn = document.getElementById('reconnectBtn');
+      const confirmNewBackupBtn = document.getElementById('confirmNewBackupBtn');
+      const sendCommandBtn = document.getElementById('sendCommandBtn');
+      const commandInput = document.getElementById('commandInput');
+      const serverLogs = document.getElementById('serverLogs');
+      const logsContainer = document.getElementById('logsContainer');
+      const connectionDetailsContainer = document.getElementById('connectionDetailsContainer');
+      const serverUptime = document.getElementById('serverUptime');
+
+      // Functions
+      function toggleSidebar() {
+        wrapper.classList.toggle('toggled');
+      }
+
+      function showSection(section) {
+        currentSection = section;
+        document.querySelectorAll('section').forEach(s => s.classList.add('d-none'));
+        document.getElementById(`section-${section}`).classList.remove('d-none');
+        
+        document.querySelectorAll('.nav-link').forEach(l => {
+          l.classList.remove('active');
+          l.classList.add('text-white');
+        });
+        const activeLink = document.getElementById(`nav-${section}`);
+        activeLink.classList.add('active');
+        activeLink.classList.remove('text-white');
+
+        if (window.innerWidth < 768) {
+          wrapper.classList.remove('toggled');
+        }
+      }
+
+      function handleFetchError(err) {
+        console.error("API Error:", err);
+        if (!isDisconnected) {
+          isDisconnected = true;
+          disconnectedModal.show();
+        }
+      }
+
+      async function sendCommand(action, data = null) {
+        if (isRequestInFlight) return;
+        isRequestInFlight = true;
+
+        if (action === "start_server") {
+          updateToggleButton(true, "Starting server...");
+        } else if (action === "stop_server") {
+          updateToggleButton(true, "Stopping server...");
+        }
+        
+        try {
+          const response = await fetch("/api/command", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action, data }),
+          });
+          const result = await response.json();
+          if (!response.ok) {
+            showError(result.error);
+            throw new Error(result.error || "Server response error");
+          }
+          if (result.success) {
+            setTimeout(refreshStatus, 500);
+          }
+        } catch (err) {
+          handleFetchError(err);
+        } finally {
+          isRequestInFlight = false;
+        }
+      }
+
+      function updateToggleButton(disabled, text) {
+        toggleServerBtn.disabled = disabled;
+        toggleServerBtn.querySelector('.btn-text').textContent = text;
+        if (disabled) {
+          toggleServerBtn.querySelector('.spinner-border').classList.remove('d-none');
+        } else {
+          toggleServerBtn.querySelector('.spinner-border').classList.add('d-none');
+        }
+      }
+
+      async function refreshStatus() {
+        const originalHtml = refreshBtn.innerHTML;
+        refreshBtn.disabled = true;
+        refreshBtn.innerHTML = '<i class="bi bi-arrow-clockwise spin me-md-1"></i> <span class="d-none d-md-inline">Refreshing...</span>';
+        
+        try {
+          const response = await fetch("/api/status");
+          const data = await response.json();
+          if (!response.ok) {
+            showError(data.error);
+            throw new Error(data.error || "Status check failed");
+          }
+          
+          if (isDisconnected) {
+            isDisconnected = false;
+            disconnectedModal.hide();
+          }
+          
+          updateUI(data);
+        } catch (err) {
+          handleFetchError(err);
+        } finally {
+          setTimeout(() => {
+            refreshBtn.disabled = false;
+            refreshBtn.innerHTML = originalHtml;
+          }, 600);
+        }
+      }
+
+      function formatDuration(seconds) {
+        if (seconds < 0) return "00:00:00";
+        const h = Math.floor(seconds / 3600).toString().padStart(2, '0');
+        const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
+        const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+        return `${h}:${m}:${s}`;
+      }
+
+      function updateUptimeDisplay() {
+        if (isServerRunning && serverStartTime) {
+          const now = Date.now() / 1000;
+          const delta = now - serverStartTime;
+          serverUptime.textContent = formatDuration(delta);
+        } else {
+          serverUptime.textContent = "--:--:--";
+        }
+      }
+
+      function updateUI(data) {
+        const bedrock = data.bedrock || {};
+        const web = data.web_manager || {};
+        const players = data.players || [];
+        const operators = new Set(data.operators || []);
+        const logs = data.logs || [];
+        const network = data.network || {};
+        propertiesData = data.properties || {};
+        backupsData = data.backups || [];
+        serverStartTime = data.server_start_time;
+
+        // Server Details
+        isServerRunning = bedrock.running;
+        const stateText = isServerRunning ? "Running" : "Stopped";
+        document.getElementById('serverState').textContent = stateText;
+        document.getElementById('statusDot').className = `rounded-circle ${isServerRunning ? "bg-success" : "bg-secondary"}`;
+        
+        // Update Toggle Button only if not currently in flight
+        if (!isRequestInFlight) {
+          const btnText = isServerRunning ? "Stop Server" : "Start Server";
+          updateToggleButton(false, btnText);
+          toggleServerBtn.className = `btn shadow-sm ${isServerRunning ? "btn-outline-danger" : "btn-primary"}`;
+        }
+        
+        document.getElementById('playerCount').textContent = bedrock.connected || 0;
+        document.getElementById('playerLimit').textContent = `Max: ${bedrock.max_players || '-'}`;
+        const serverPortEl = document.getElementById('serverPort');
+        if (serverPortEl) {
+          serverPortEl.textContent = bedrock.port || "-";
+        }
+        document.getElementById('serverGamemode').textContent = bedrock.gamemode || "-";
+
+        // Uptime logic
+        if (isServerRunning) {
+          if (!uptimeInterval) {
+            uptimeInterval = setInterval(updateUptimeDisplay, 1000);
+          }
+          updateUptimeDisplay();
+        } else {
+          if (uptimeInterval) {
+            clearInterval(uptimeInterval);
+            uptimeInterval = null;
+          }
+          serverUptime.textContent = "--:--:--";
+        }
+
+        // Connection Details Display Update
+        if (document.getElementById('localIp')) {
+          document.getElementById('localIp').textContent = network.local_ip || "-";
+          document.getElementById('gamePort').textContent = network.port || "-";
+          document.getElementById('localUrl').textContent = (network.local_ip && network.port) ? `${network.local_ip}:${network.port}` : "-";
+        }
+
+        // Logic for Logs and Connection Details Animation
+        if (isServerRunning) {
+          [logsContainer, connectionDetailsContainer].forEach(container => {
+            if (container && container.classList.contains('d-none')) {
+              container.classList.remove('d-none');
+              container.classList.remove('animate-out');
+              container.classList.add('animate-in');
+            }
+          });
+          const logsText = logs.join("");
+          if (logsText !== lastLogs) {
+            serverLogs.innerText = logsText;
+            serverLogs.scrollTop = serverLogs.scrollHeight;
+            lastLogs = logsText;
+          }
+        } else {
+          [logsContainer, connectionDetailsContainer].forEach(container => {
+            if (container && !container.classList.contains('d-none') && !container.classList.contains('animate-out')) {
+              container.classList.remove('animate-in');
+              container.classList.add('animate-out');
+              setTimeout(() => {
+                if (!isServerRunning) {
+                  container.classList.add('d-none');
+                  if (container === logsContainer) serverLogs.innerText = "";
+                }
+              }, 400);
+            }
+          });
+          lastLogs = "";
+        }
+
+        // Player List
+        const playerList = document.getElementById('playerList');
+        const noPlayersMsg = document.getElementById('noPlayersMsg');
+        playerList.innerHTML = "";
+        if (players.length > 0) {
+          noPlayersMsg.classList.add('d-none');
+          players.forEach(p => {
+            const isOp = operators.has(p);
+            const li = document.createElement('li');
+            li.className = "list-group-item bg-transparent border-secondary d-flex align-items-center";
+            li.innerHTML = `
+              <i class="bi bi-person-fill me-2 text-primary"></i>
+              <span class="flex-grow-1">${p}</span>
+              ${isOp ? '<span class="badge text-bg-warning text-dark ms-2">OP</span>' : ''}
+            `;
+            playerList.appendChild(li);
+          });
+        } else {
+          noPlayersMsg.classList.remove('d-none');
+        }
+
+        // Web Interface Info
+        document.getElementById('webHost').textContent = web.host || "-";
+        document.getElementById('webPort').textContent = web.port || "-";
+        
+        const webLocalUrl = (network.local_ip && web.port) ? `http://${network.local_ip}:${web.port}` : "-";
+        if (document.getElementById('webLocalUrl')) {
+          document.getElementById('webLocalUrl').textContent = webLocalUrl;
+          document.getElementById('webLocalUrl').href = webLocalUrl !== "-" ? webLocalUrl : "#";
+        }
+
+        document.getElementById('webUrl').textContent = web.url || "-";
+        document.getElementById('webUrl').href = web.url || "#";
+
+        // Properties Table
+        const propsBody = document.getElementById('propertiesTableBody');
+        propsBody.innerHTML = "";
+        const propKeys = Object.keys(propertiesData).sort();
+        document.getElementById('propsCount').textContent = `${propKeys.length} items`;
+        propKeys.forEach(key => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td class="fw-medium text-info">${key}</td>
+            <td><code>${propertiesData[key]}</code></td>
+            <td class="d-none d-md-table-cell" style="width: 140px;">
+              <button class="btn btn-sm btn-light w-100 edit-icon" title="Edit" onclick="openEditProperty('${key}', '${propertiesData[key].replace(/'/g, "\\'")}')">
+                <i class="bi bi-pencil me-1"></i> Edit
+              </button>
+            </td>
+          `;
+          tr.onclick = (e) => {
+             if (!e.target.closest('button')) openEditProperty(key, propertiesData[key]);
+          };
+          propsBody.appendChild(tr);
+        });
+
+        // Backups Table
+        const backupsBody = document.getElementById('backupsTableBody');
+        const noBackupsMsg = document.getElementById('noBackupsMsg');
+        backupsBody.innerHTML = "";
+        if (backupsData.length > 0) {
+          noBackupsMsg.classList.add('d-none');
+          backupsData.forEach(b => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+              <td class="fw-medium">${b.name}</td>
+              <td><span class="badge text-bg-dark border border-secondary">${b.size}</span></td>
+              <td class="small text-muted">${b.modified}</td>
+              <td>
+                <div class="d-flex w-100 gap-2">
+                  <button class="btn btn-sm btn-outline-primary flex-fill" onclick="confirmRestore('${b.name}')" title="Restore">
+                    <i class="bi bi-arrow-counterclockwise"></i>
+                  </button>
+                  <button class="btn btn-sm btn-outline-danger flex-fill" onclick="confirmDelete('${b.name}')" title="Delete">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </div>
+              </td>
+            `;
+            backupsBody.appendChild(tr);
+          });
+        } else {
+          noBackupsMsg.classList.remove('d-none');
+        }
+
+        // Backup Progress
+        const backupInProgress = !!data.backup_in_progress;
+        if (backupInProgress && !backupProgressVisible) {
+          backupProgressModal.show();
+          backupProgressVisible = true;
+        } else if (!backupInProgress && backupProgressVisible) {
+          backupProgressModal.hide();
+          backupProgressVisible = false;
+        }
+        if (data.backup_error) {
+          showError(data.backup_error);
+        }
+      }
+
+      // Actions
+      function openEditProperty(key, value) {
+        document.getElementById('propKey').value = key;
+        document.getElementById('propValue').value = value;
+        editPropertyModal.show();
+      }
+
+      document.getElementById('savePropertyBtn').onclick = () => {
+        const key = document.getElementById('propKey').value;
+        const value = document.getElementById('propValue').value;
+        sendCommand('update_property', { key, value });
+        editPropertyModal.hide();
+      };
+
+      function confirmDelete(name) {
+        document.getElementById('confirmTitle').textContent = "Delete Backup";
+        document.getElementById('confirmText').innerHTML = `Are you sure you want to delete backup <strong>${name}</strong>? This action cannot be undone.`;
+        const btn = document.getElementById('confirmActionBtn');
+        btn.className = "btn btn-danger";
+        btn.textContent = "Delete";
+        btn.onclick = () => {
+          sendCommand('delete_backup', { name });
+          confirmModal.hide();
+        };
+        confirmModal.show();
+      }
+
+      function confirmRestore(name) {
+        document.getElementById('confirmTitle').textContent = "Restore Backup";
+        document.getElementById('confirmText').innerHTML = `Are you sure you want to restore <strong>${name}</strong>? Current world data will be moved to an 'Old_' folder.`;
+        const btn = document.getElementById('confirmActionBtn');
+        btn.className = "btn btn-primary";
+        btn.textContent = "Restore";
+        btn.onclick = () => {
+          sendCommand('restore_backup', { name });
+          confirmModal.hide();
+        };
+        confirmModal.show();
+      }
+
+      function openNewBackupModal() {
+        const timestamp = new Date().toISOString().replace(/T/, '_').replace(/\..+/, '').replace(/-/g, '').replace(/:/g, '');
+        document.getElementById('backupName').value = `web-backup-${timestamp}`;
+        newBackupModal.show();
+      }
+
+      async function handleSendCommand() {
+        const command = commandInput.value.trim();
+        if (command && isServerRunning) {
+          commandInput.disabled = true;
+          sendCommandBtn.disabled = true;
+          const originalBtnHtml = sendCommandBtn.innerHTML;
+          sendCommandBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+          
+          try {
+            await sendCommand('send_command', { command });
+            commandInput.value = '';
+          } finally {
+            commandInput.disabled = false;
+            sendCommandBtn.disabled = false;
+            sendCommandBtn.innerHTML = originalBtnHtml;
+            commandInput.focus();
+          }
+        }
+      }
+
+      sendCommandBtn.onclick = handleSendCommand;
+      commandInput.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          handleSendCommand();
+        }
+      };
+
+      confirmNewBackupBtn.onclick = async () => {
+        const name = document.getElementById('backupName').value;
+        if (!name) return;
+        if (isRequestInFlight) return;
+        confirmNewBackupBtn.disabled = true;
+        try {
+          backupProgressModal.show();
+          backupProgressVisible = true;
+          await sendCommand('new_backup', { name });
+          newBackupModal.hide();
+        } finally {
+          confirmNewBackupBtn.disabled = false;
+        }
+      };
+
+      document.getElementById('newBackupBtn').onclick = openNewBackupModal;
+
+      toggleServerBtn.onclick = () => {
+        sendCommand(isServerRunning ? "stop_server" : "start_server");
+      };
+
+      reconnectBtn.onclick = refreshStatus;
+      refreshBtn.onclick = refreshStatus;
+      sidebarToggle.onclick = toggleSidebar;
+
+      // Init
+      setInterval(refreshStatus, 5000);
+      refreshStatus();
+    </script>
+  </body>
+</html>

@@ -22,6 +22,12 @@ But it's quite easy to run it yourself.
 4. In the Preferences tab, choose the folder where you've downloaded the Bedrock server folder and choose or create a backups folder.
 5. Edit `server.properties` if needed, and click start server and enjoy!
 
+## Web manager (beta)
+1. Install the auxiliary web stack with `pip install flask`.
+2. Open the new **Web Manager** tab, configure the host/port to taste, and click **Start Web Manager**.
+3. Once running, the **Open Web UI** button opens the Bootstrap-powered interface. You can also browse to `http://<host>:<port>`.
+4. The embedded Flask app polls `./api/status` and forwards `POST /api/command` requests so the web UI and desktop UI stay in sync.
+
 ## Notes
 - Backup behaviour: Restoring a world renames the existing `worlds/<name>` directory to `Old_<world name>` (removing any previous `Old_<world name>`) before extracting the backup so the restored files reuse the original directory name.
 
