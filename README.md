@@ -6,6 +6,12 @@ MC Bedrock Server Manager is a simple and easy way to setup and manage your Mine
 - Easy world backups management
 - Start and manage server, view players list, all from a single view
 
+## Screenshots
+
+![Server Properties](docs/screenshots/server_properties.png)
+![Management](docs/screenshots/server_management.png)
+![Backups](docs/screenshots/backups.png)
+
 ## How to use
 For now, no binaries are provided. A `build_installer.py` is provided for you to create your own binaries if you wish.
 But it's quite easy to run it yourself.
@@ -20,4 +26,4 @@ But it's quite easy to run it yourself.
 - Backup behaviour: Restoring a world renames the existing `worlds/<name>` directory to `Old_<world name>` (removing any previous `Old_<world name>`) before extracting the backup so the restored files reuse the original directory name.
 
 ## License
-[MIT License](LICENSE)
+Licensed under the [MIT License](LICENSE)
