@@ -1,1 +1,0 @@
-Restoring a world now renames the existing world directory inside `worlds/` to `Old_<world name>` (removing any previous `Old_<world name>` if it exists) before extracting the backup so the new files arrive under the original name.
