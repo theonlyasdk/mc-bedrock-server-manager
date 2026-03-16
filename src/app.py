@@ -13,18 +13,42 @@ import webbrowser
 import zipfile
 from collections import deque
 from tkinter import filedialog, messagebox, ttk
+from typing import Optional
 
 from constants import APP_AUTHOR, APP_LICENSE, APP_NAME
 from dialogs import confirm_dialog, prompt_string, show_validation_dialog
 from properties_file import PropertiesFile
 from server_validation import (
     server_dir_missing_files,
-    server_executable,
+    server_launch_command,
     validate_properties_data,
 )
 from settings_store import load_settings, save_settings
 from theme import apply_theme
 from WebManager import WebManagerServer
+from macros import MacroScheduler, MacroStore
+
+TRIGGER_CANONICAL = {
+    "player_login": "player_join",
+    "player_join": "player_join",
+    "player_leave": "player_leave",
+    "player_death": "player_death",
+}
+
+MACROS_FILE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "macros.json"))
+WELCOME_MESSAGE = {"rawtext": [{"text": "Welcome, {player}!"}]}
+PRESET_MACROS = [
+    {
+        "id": "preset-login-message",
+        "title": "Login message",
+        "icon": "bi-box-arrow-in-right",
+        "commands": [
+            f"tellraw {{player}} {json.dumps(WELCOME_MESSAGE)}"
+        ],
+        "trigger": "player_join",
+        "description": "Send a friendly greeting when someone logs in.",
+    }
+]
 
 
 class App(tk.Tk):
@@ -40,6 +64,9 @@ class App(tk.Tk):
         self.server_process = None
         self.server_start_time = None
         self.server_start_monotonic = None
+        self.server_backend = None
+        self._server_dir_running = None
+        self._perf_prev = None
         self.server_queue = queue.Queue()
         self.live_players = set()
         self.web_logs = deque(maxlen=200)
@@ -49,12 +76,20 @@ class App(tk.Tk):
         self.web_manager_host_var = tk.StringVar()
         self.web_manager_port_var = tk.StringVar()
         self.web_manager_status_var = tk.StringVar(value="Web manager stopped.")
+        self.macro_store = MacroStore(MACROS_FILE_PATH)
+        self.macro_scheduler = MacroScheduler(self.macro_store, self._run_macro_commands)
         self.web_manager = WebManagerServer(
             status_provider=self._web_manager_status_payload,
             command_handler=self._web_manager_command_handler,
+            macros_provider=self._macro_list_payload,
+            macro_creator=self._macro_creator_handler,
         )
+        self.macro_scheduler.start()
         self.web_backup_in_progress = False
         self.web_backup_error = None
+        self._log_tailer_stop = threading.Event()
+        self._log_tailer_thread = None
+        self._log_tailer_path = None
 
         self._build_menu()
         self._build_tabs()
@@ -63,6 +98,8 @@ class App(tk.Tk):
         self._refresh_backups()
         self._refresh_players()
         self._poll_server_output()
+        self.after(150, self._maybe_autostart_web_manager)
+        self.after(250, self._maybe_autostart_server)
 
     def _build_menu(self):
         menu = tk.Menu(self)
@@ -132,8 +169,36 @@ class App(tk.Tk):
         ttk.Entry(self.tab_prefs, textvariable=self.backups_dir_var).grid(row=2, column=1, sticky="ew", **pad)
         ttk.Button(self.tab_prefs, text="Choose", command=self._choose_backups_dir).grid(row=2, column=2, **pad)
 
+        ttk.Label(self.tab_prefs, text="Server backend:").grid(row=3, column=0, sticky="w", **pad)
+        self.server_backend_var = tk.StringVar()
+        server_backend = ttk.Combobox(
+            self.tab_prefs,
+            textvariable=self.server_backend_var,
+            values=("auto", "endstone", "bedrock"),
+            state="readonly",
+            width=12,
+        )
+        server_backend.grid(row=3, column=1, sticky="w", **pad)
+        server_backend.bind("<<ComboboxSelected>>", lambda _e: (self._save_preferences_from_ui(), self._validate_settings()))
+
+        self.autostart_server_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            self.tab_prefs,
+            text="Autostart server on start",
+            variable=self.autostart_server_var,
+            command=self._save_preferences_from_ui,
+        ).grid(row=4, column=0, columnspan=3, sticky="w", **pad)
+
+        self.autostart_web_manager_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            self.tab_prefs,
+            text="Autostart web manager on start",
+            variable=self.autostart_web_manager_var,
+            command=self._save_preferences_from_ui,
+        ).grid(row=5, column=0, columnspan=3, sticky="w", **pad)
+
         self.prefs_status = ttk.Label(self.tab_prefs, text="")
-        self.prefs_status.grid(row=3, column=0, columnspan=3, sticky="w", **pad)
+        self.prefs_status.grid(row=6, column=0, columnspan=3, sticky="w", **pad)
 
         self.tab_prefs.columnconfigure(1, weight=1)
 
@@ -356,6 +421,28 @@ class App(tk.Tk):
             "stop_server": self._stop_server,
             "refresh_players": self._refresh_players,
         }
+        if action == "set_server_backend" and data:
+            backend = (data.get("backend") or "").strip().lower()
+            if backend not in {"auto", "endstone", "bedrock"}:
+                return {"error": "Invalid backend. Use auto/endstone/bedrock."}
+            self.after(0, lambda: self._set_server_backend(backend))
+            return {"scheduled": True}
+        if action == "set_autostart_server" and data is not None:
+            enabled = bool(data.get("enabled", False))
+            self.after(0, lambda: self._set_autostart_server(enabled))
+            return {"scheduled": True}
+        if action == "run_macro" and data:
+            commands = data.get("commands") or []
+            macro_id = data.get("macro_id")
+            commands = [str(c).strip() for c in commands if str(c).strip()]
+            if commands:
+                self._run_macro_commands(commands, macro_id=macro_id)
+                return {"success": True}
+            return {"error": "No commands provided"}
+        if action == "import_macros" and data:
+            macros = data.get("macros")
+            self.after(0, lambda: self._import_macros(macros))
+            return {"scheduled": True}
         if action == "send_command" and data:
             cmd = data.get("command")
             if cmd:
@@ -419,6 +506,32 @@ class App(tk.Tk):
 
         return {"scheduled": True}
 
+    def _set_server_backend(self, backend: str):
+        self.settings["server_backend"] = backend
+        if hasattr(self, "server_backend_var"):
+            try:
+                self.server_backend_var.set(backend)
+            except Exception:
+                pass
+        save_settings(self.settings)
+
+    def _set_autostart_server(self, enabled: bool):
+        self.settings["autostart_server"] = bool(enabled)
+        if hasattr(self, "autostart_server_var"):
+            try:
+                self.autostart_server_var.set(bool(enabled))
+            except Exception:
+                pass
+        save_settings(self.settings)
+
+    def _import_macros(self, macros):
+        try:
+            count = self.macro_store.replace_all(macros if macros is not None else [])
+        except Exception as exc:
+            self.web_logs.append(f"[Macros] Import failed: {exc}\n")
+            return
+        self.web_logs.append(f"[Macros] Imported {count} macro(s).\n")
+
     def _web_send_command(self, cmd):
         if not self.server_process or self.server_process.poll() is not None:
             return
@@ -431,14 +544,93 @@ class App(tk.Tk):
         except Exception:
             pass
 
-    def _web_update_property(self, key, value):
-        if not self.properties: return
-        self.properties.set_value(key, value)
+    def _run_macro_commands(self, commands, macro_id=None):
+        if macro_id:
+            self.macro_store.increment_times_ran(macro_id)
+        for cmd in commands:
+            self.after(0, lambda c=cmd: self._web_send_command(c))
+
+    def _macro_list_payload(self):
+        return {"macros": self.macro_store.list(), "presets": PRESET_MACROS}
+
+    def _macro_creator_handler(self, payload: dict):
+        if payload.get("delete"):
+            macro_id = str(payload.get("id") or "").strip()
+            if not macro_id:
+                return {"error": "Macro ID is required for delete"}
+            deleted = self.macro_store.delete_macro(macro_id)
+            if not deleted:
+                return {"error": "Macro not found"}
+            return {"deleted": True}
+
+        title = str(payload.get("title") or "").strip()
+        if not title:
+            return {"error": "Macro title is required"}
+        commands = payload.get("commands")
+        if isinstance(commands, str):
+            commands = [line.strip() for line in commands.splitlines() if line.strip()]
+        elif isinstance(commands, list):
+            commands = [str(c).strip() for c in commands if str(c).strip()]
+        else:
+            commands = []
+        if not commands:
+            return {"error": "At least one command is required"}
+        icon = str(payload.get("icon") or "bi-gear-fill").strip()
+        trigger = str(payload.get("trigger") or "manual").strip().lower()
+        if trigger not in {"manual", "interval", "player_join", "player_leave", "player_death"}:
+            trigger = "manual"
+        trigger = TRIGGER_CANONICAL.get(trigger, trigger)
+        interval_seconds = 0
         try:
-            self.properties.save()
+            interval_seconds = int(payload.get("interval_seconds", 0) or 0)
+            if interval_seconds < 0:
+                interval_seconds = 0
+        except (TypeError, ValueError):
+            interval_seconds = 0
+        macro_id = payload.get("id")
+        if macro_id:
+            updated = self.macro_store.update_macro(
+                macro_id=macro_id,
+                title=title,
+                icon=icon or "bi-gear-fill",
+                commands=commands,
+                interval_seconds=interval_seconds,
+                trigger=trigger,
+            )
+            if not updated:
+                return {"error": "Macro not found"}
+            return updated
+        macro = self.macro_store.add_macro(
+            title=title,
+            icon=icon or "bi-gear-fill",
+            commands=commands,
+            interval_seconds=interval_seconds,
+            trigger=trigger,
+        )
+        return macro
+
+    def _web_update_property(self, key, value):
+        try:
+            self._set_property_value(key, value)
             self._refresh_properties()
         except Exception:
             pass
+
+    def _set_property_value(self, key, value):
+        cleaned_key = (str(key or "")).strip()
+        if not cleaned_key:
+            raise ValueError("Property key is required.")
+        server_dir = self.server_dir_var.get().strip()
+        if not server_dir:
+            raise ValueError("Server folder is not configured.")
+        if not os.path.isdir(server_dir):
+            raise FileNotFoundError("Server folder not found.")
+        prop_path = os.path.join(server_dir, "server.properties")
+        if not self.properties or self.properties.path != prop_path:
+            self.properties = PropertiesFile(prop_path)
+            self.properties.load()
+        self.properties.set_value(cleaned_key, "" if value is None else str(value))
+        self.properties.save()
 
     def _web_delete_backup(self, name):
         backups_dir = self.backups_dir_var.get().strip()
@@ -522,7 +714,8 @@ class App(tk.Tk):
                 dest = os.path.join(server_dir, "worlds")
                 basename = os.path.basename(path.rstrip(os.sep))
                 target = os.path.join(dest, basename)
-                if os.path.isdir(target): shutil.rmtree(target)
+                if os.path.isdir(target):
+                    shutil.rmtree(target)
                 os.makedirs(dest, exist_ok=True)
                 shutil.copytree(path, target)
             self.after(0, self._refresh_backups)
@@ -567,12 +760,19 @@ class App(tk.Tk):
                 if name:
                     ops_names.append(name)
 
+        metrics = self._server_process_metrics() if running else {}
         bedrock = {
             "running": running,
             "port": props.get("server-port", "-"),
             "gamemode": props.get("gamemode", "-"),
             "connected": len(self.live_players),
             "max_players": props.get("max-players", "-"),
+            "backend": self.server_backend if running else "-",
+            "backend_preference": (self.settings.get("server_backend", "auto") or "auto").lower(),
+            "autostart_server": bool(self.settings.get("autostart_server", False)),
+            "cpu_percent": metrics.get("cpu_percent"),
+            "mem_percent": metrics.get("mem_percent"),
+            "mem_rss_bytes": metrics.get("mem_rss_bytes"),
         }
         web_running = self.web_manager.is_running()
         web_host = self.web_manager.host if web_running else (self.web_manager_host_var.get().strip() or "127.0.0.1")
@@ -604,6 +804,27 @@ class App(tk.Tk):
             "backup_error": backup_error,
         }
 
+    def _maybe_autostart_server(self):
+        if self.server_process and self.server_process.poll() is None:
+            return
+        if not bool(self.settings.get("autostart_server", False)):
+            return
+        server_dir = self.server_dir_var.get().strip()
+        if not server_dir or not os.path.isdir(server_dir):
+            return
+        self._start_server()
+
+    def _maybe_autostart_web_manager(self):
+        if self.web_manager.is_running():
+            return
+        if not bool(self.settings.get("autostart_web_manager", False)):
+            return
+        try:
+            self._start_web_manager()
+        except Exception:
+            # _start_web_manager already shows a dialog for validation errors; ignore unexpected failures.
+            pass
+
     def _update_uptime(self):
         if self.server_process and self.server_process.poll() is None:
             if not self.server_start_time:
@@ -617,6 +838,77 @@ class App(tk.Tk):
             self.server_start_time = None
             self.server_start_monotonic = None
             self.status_uptime_var.set("Uptime: -")
+
+    def _server_process_metrics(self) -> dict:
+        proc = self.server_process
+        if not proc or proc.poll() is not None or not proc.pid:
+            self._perf_prev = None
+            return {}
+        if os.name != "posix":
+            return {}
+
+        pid = proc.pid
+        now = time.monotonic()
+        try:
+            ticks_per_sec = os.sysconf("SC_CLK_TCK")
+        except Exception:
+            ticks_per_sec = 100
+
+        proc_ticks = None
+        try:
+            with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as fp:
+                parts = fp.read().strip().split()
+            if len(parts) >= 17:
+                utime = int(parts[13])
+                stime = int(parts[14])
+                proc_ticks = utime + stime
+        except Exception:
+            proc_ticks = None
+
+        cpu_percent = None
+        if proc_ticks is not None:
+            prev = self._perf_prev
+            if prev:
+                prev_ticks, prev_time = prev
+                dt = max(0.0001, now - prev_time)
+                d_ticks = max(0, proc_ticks - prev_ticks)
+                cpu_seconds = d_ticks / float(ticks_per_sec)
+                cpu_percent = (cpu_seconds / dt) * 100.0
+            self._perf_prev = (proc_ticks, now)
+
+        mem_rss_bytes = None
+        try:
+            with open(f"/proc/{pid}/status", "r", encoding="utf-8") as fp:
+                for line in fp:
+                    if line.startswith("VmRSS:"):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            mem_rss_bytes = int(parts[1]) * 1024
+                        break
+        except Exception:
+            mem_rss_bytes = None
+
+        mem_percent = None
+        if mem_rss_bytes is not None:
+            mem_total_kb = None
+            try:
+                with open("/proc/meminfo", "r", encoding="utf-8") as fp:
+                    for line in fp:
+                        if line.startswith("MemTotal:"):
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                mem_total_kb = int(parts[1])
+                            break
+            except Exception:
+                mem_total_kb = None
+            if mem_total_kb and mem_total_kb > 0:
+                mem_percent = (mem_rss_bytes / (mem_total_kb * 1024.0)) * 100.0
+
+        return {
+            "cpu_percent": cpu_percent,
+            "mem_rss_bytes": mem_rss_bytes,
+            "mem_percent": mem_percent,
+        }
 
     def _get_uptime_seconds(self):
         if not self.server_process or self.server_process.poll() is not None:
@@ -663,6 +955,17 @@ class App(tk.Tk):
     def _load_preferences_into_ui(self):
         self.server_dir_var.set(self.settings.get("server_dir", ""))
         self.backups_dir_var.set(self.settings.get("backups_dir", ""))
+        self.server_backend_var.set(self.settings.get("server_backend", "auto"))
+        if hasattr(self, "autostart_server_var"):
+            try:
+                self.autostart_server_var.set(bool(self.settings.get("autostart_server", False)))
+            except Exception:
+                pass
+        if hasattr(self, "autostart_web_manager_var"):
+            try:
+                self.autostart_web_manager_var.set(bool(self.settings.get("autostart_web_manager", False)))
+            except Exception:
+                pass
         self.web_manager_host_var.set(self.settings.get("web_manager_host", "127.0.0.1"))
         self.web_manager_port_var.set(str(self.settings.get("web_manager_port", 5050)))
         self._validate_settings()
@@ -671,6 +974,17 @@ class App(tk.Tk):
     def _save_preferences_from_ui(self):
         self.settings["server_dir"] = self.server_dir_var.get().strip()
         self.settings["backups_dir"] = self.backups_dir_var.get().strip()
+        self.settings["server_backend"] = (self.server_backend_var.get().strip() or "auto").lower()
+        if hasattr(self, "autostart_server_var"):
+            try:
+                self.settings["autostart_server"] = bool(self.autostart_server_var.get())
+            except Exception:
+                self.settings["autostart_server"] = bool(self.settings.get("autostart_server", False))
+        if hasattr(self, "autostart_web_manager_var"):
+            try:
+                self.settings["autostart_web_manager"] = bool(self.autostart_web_manager_var.get())
+            except Exception:
+                self.settings["autostart_web_manager"] = bool(self.settings.get("autostart_web_manager", False))
         host = self.web_manager_host_var.get().strip() or "127.0.0.1"
         port_value = self.settings.get("web_manager_port", 5050)
         try:
@@ -727,9 +1041,10 @@ class App(tk.Tk):
     def _validate_settings(self):
         server_dir = self.server_dir_var.get().strip()
         backups_dir = self.backups_dir_var.get().strip()
+        backend_pref = (self.server_backend_var.get().strip() or self.settings.get("server_backend", "auto")).lower()
         server_status = "Missing"
         if server_dir:
-            missing = server_dir_missing_files(server_dir)
+            missing = server_dir_missing_files(server_dir, preferred_backend=backend_pref)
             if missing and missing != ["server folder"]:
                 server_status = "Missing: " + ", ".join(missing)
             elif missing == ["server folder"]:
@@ -782,14 +1097,8 @@ class App(tk.Tk):
         new_value = prompt_string(self, f"Edit value for '{key}':", value)
         if new_value is None:
             return
-        if not self.properties:
-            return
-        if not os.path.exists(self.properties.path):
-            messagebox.showerror(APP_NAME, "server.properties not found.")
-            return
-        self.properties.set_value(key, new_value)
         try:
-            self.properties.save()
+            self._set_property_value(key, new_value)
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"Failed to write server.properties: {exc}")
             return
@@ -1126,13 +1435,14 @@ class App(tk.Tk):
         if not os.path.isdir(server_dir):
             messagebox.showwarning(APP_NAME, "Server folder does not exist.")
             return
-        exe = server_executable(server_dir)
-        if not exe:
+        backend_pref = (self.settings.get("server_backend", "auto") or "auto").lower()
+        launch_cmd, backend = server_launch_command(server_dir, preferred_backend=backend_pref)
+        if not launch_cmd:
             messagebox.showwarning(APP_NAME, "Server executable not found in server folder.")
             return
         try:
             self.server_process = subprocess.Popen(
-                [exe],
+                launch_cmd,
                 cwd=server_dir,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -1143,6 +1453,9 @@ class App(tk.Tk):
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"Failed to start server: {exc}")
             return
+        self.server_backend = backend
+        self._server_dir_running = server_dir
+        self._start_log_tailer(server_dir, backend)
 
         self.btn_server_start.config(state="disabled")
         self.btn_server_stop.config(state="normal")
@@ -1181,9 +1494,16 @@ class App(tk.Tk):
                     if event == "player_connected":
                         self.live_players.add(value)
                         self._refresh_live_players()
-                    elif event == "player_disconnected":
+                    elif event == "player_join":
+                        self.live_players.add(value)
+                        self._refresh_live_players()
+                        self._trigger_macros_for_event("player_join", value)
+                    elif event == "player_leave":
                         self.live_players.discard(value)
                         self._refresh_live_players()
+                        self._trigger_macros_for_event("player_leave", value)
+                    elif event == "player_death":
+                        self._trigger_macros_for_event("player_death", value)
                     elif event == "server_stopped":
                         self.live_players.clear()
                         self._refresh_live_players()
@@ -1193,15 +1513,66 @@ class App(tk.Tk):
         except queue.Empty:
             pass
         if self.server_process and self.server_process.poll() is not None:
+            self._stop_log_tailer()
             self.btn_server_start.config(state="normal")
             self.btn_server_stop.config(state="disabled")
             self.btn_server_refresh.config(state="disabled")
             self.status_running_var.set("Stopped")
             self.server_start_time = None
             self.server_start_monotonic = None
+            self.server_backend = None
+            self._server_dir_running = None
+            self._perf_prev = None
             self.status_uptime_var.set("Uptime: -")
             self._set_console_enabled(False)
         self.after(200, self._poll_server_output)
+
+    def _trigger_macros_for_event(self, trigger_event, player_name):
+        if not player_name or not trigger_event:
+            return
+        name = str(player_name or "").strip()
+        if not name:
+            return
+        try:
+            macros = self.macro_store.list()
+        except Exception:
+            return
+        for macro in macros:
+            if not isinstance(macro, dict):
+                continue
+            stored_trigger = TRIGGER_CANONICAL.get(str(macro.get("trigger") or "").strip().lower(), (macro.get("trigger") or "manual").strip().lower())
+            if stored_trigger != trigger_event:
+                continue
+            commands = macro.get("commands") or []
+            if not commands:
+                continue
+            rendered = []
+            for cmd in commands:
+                rendered.append(str(cmd or "").replace("{player}", name))
+            self._run_macro_commands(rendered)
+
+    def _trigger_player_join_macros(self, player_name: str):
+        name = str(player_name or "").strip()
+        if not name:
+            return
+        try:
+            macros = self.macro_store.list()
+        except Exception:
+            return
+        for macro in macros:
+            if not isinstance(macro, dict):
+                continue
+            if (macro.get("trigger") or "manual") != "player_join":
+                continue
+            commands = macro.get("commands") or []
+            if not commands:
+                continue
+            rendered = []
+            for cmd in commands:
+                cmd_text = str(cmd or "")
+                cmd_text = cmd_text.replace("{player}", name)
+                rendered.append(cmd_text)
+            self._run_macro_commands(rendered)
 
     def _append_console(self, text):
         self.console_text.config(state="normal")
@@ -1216,6 +1587,8 @@ class App(tk.Tk):
             self.console_input.delete(0, tk.END)
 
     def _redirect_console_input(self, event):
+        if (event.state & 0x4) and event.keysym.lower() in {"c", "a"}:
+            return
         if event.char and event.char.isprintable():
             self.console_input.focus_set()
             self.console_input.insert("end", event.char)
@@ -1258,8 +1631,12 @@ class App(tk.Tk):
             self.server_process.terminate()
         except Exception:
             pass
+        self._stop_log_tailer()
         self.server_start_time = None
         self.server_start_monotonic = None
+        self.server_backend = None
+        self._server_dir_running = None
+        self._perf_prev = None
         self.status_uptime_var.set("Uptime: -")
         self.btn_server_start.config(state="normal")
         self.btn_server_stop.config(state="disabled")
@@ -1270,6 +1647,7 @@ class App(tk.Tk):
         self._set_console_enabled(False)
 
     def _on_close(self):
+        self.macro_scheduler.stop()
         self._stop_web_manager()
         self._shutdown_server_process()
         self.destroy()
@@ -1295,6 +1673,10 @@ class App(tk.Tk):
                     proc.kill()
                 except Exception:
                     pass
+        self.server_backend = None
+        self._server_dir_running = None
+        self._perf_prev = None
+        self._stop_log_tailer()
 
     def _build_whitelist_tab(self):
         self.whitelist_list = tk.Listbox(self.tab_whitelist)
@@ -1509,14 +1891,169 @@ class App(tk.Tk):
         self.status_connected_var.set(str(len(self.live_players)))
 
     def _parse_player_event(self, line):
-        connected = re.search(r"Player connected:\s*([^,]+)", line)
+        # Important: "Player connected" happens before the player is fully targetable by commands.
+        # We treat it as a separate event for live player tracking, and only fire macros on "joined the game".
+        joined_patterns = [
+            r"\]:\s*(?P<name>.+?)\s+joined the game\b",
+            r"\]:\s*Player\s+(?P<name>.+?)\s+joined\b",
+        ]
+        for pattern in joined_patterns:
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match:
+                name = self._clean_player_name(match.group("name"))
+                if name:
+                    return ("player_join", name)
+
+        connected = re.search(r"Player connected:\s*(?P<name>.+?)(?:,|\s+xuid:|$)", line, re.IGNORECASE)
         if connected:
-            name = connected.group(1).strip()
-            return ("player_connected", name)
-        disconnected = re.search(r"Player disconnected:\s*([^,]+)", line)
-        if disconnected:
-            name = disconnected.group(1).strip()
-            return ("player_disconnected", name)
+            name = self._clean_player_name(connected.group("name"))
+            if name:
+                return ("player_connected", name)
+
+        # Kept for potential future use, but does not trigger macros.
+        spawned = re.search(r"Player Spawned:\s*(?P<name>.+?)(?:,|\s+xuid:|$)", line, re.IGNORECASE)
+        if spawned:
+            name = self._clean_player_name(spawned.group("name"))
+            if name:
+                return ("player_connected", name)
+
+        leave_patterns = [
+            r"Player disconnected:\s*(?P<name>[^,]+)",
+            r"\b(?P<name>.+?)\s+left the game\b",
+            r"\bPlayer\s+(?P<name>.+?)\s+left\b",
+            r"Lost connection:\s*(?P<name>[^,]+)",
+        ]
+        for pattern in leave_patterns:
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match:
+                name = self._clean_player_name(match.group("name"))
+                if name:
+                    return ("player_leave", name)
+
+        death = self._match_player_death(line)
+        if death:
+            return ("player_death", death)
+        return None
+
+    def _clean_player_name(self, raw_name: str) -> str:
+        name = str(raw_name or "").strip()
+        if not name:
+            return ""
+        # Endstone/BDS logs sometimes include extra tokens after the name (xuid/pfid/etc).
+        name = re.sub(r"\s+xuid:.*$", "", name, flags=re.IGNORECASE).strip()
+        name = re.sub(r"\s+pfid:.*$", "", name, flags=re.IGNORECASE).strip()
+        # Occasionally "name, xuid: ..." is passed through here.
+        if "," in name:
+            name = name.split(",", 1)[0].strip()
+        return name
+
+    def _start_log_tailer(self, server_dir: str, backend: str):
+        self._stop_log_tailer()
+        if not server_dir or not os.path.isdir(server_dir):
+            return
+        backend = (backend or "").lower()
+        # Endstone servers often write logs to files instead of stdout (especially when using start.sh).
+        if backend != "endstone":
+            return
+        self._log_tailer_stop = threading.Event()
+        self._log_tailer_thread = threading.Thread(
+            target=self._log_tailer_loop, args=(server_dir, self._log_tailer_stop), daemon=True
+        )
+        self._log_tailer_thread.start()
+
+    def _stop_log_tailer(self):
+        stop_event = self._log_tailer_stop
+        thread = self._log_tailer_thread
+        if stop_event:
+            stop_event.set()
+        if thread and thread.is_alive():
+            try:
+                thread.join(timeout=1.5)
+            except Exception:
+                pass
+        self._log_tailer_path = None
+        self._log_tailer_thread = None
+
+    def _pick_log_file(self, server_dir: str) -> Optional[str]:
+        logs_dir = os.path.join(server_dir, "logs")
+        if not os.path.isdir(logs_dir):
+            return None
+        candidates = []
+        try:
+            for name in os.listdir(logs_dir):
+                if not name.lower().endswith(".log"):
+                    continue
+                path = os.path.join(logs_dir, name)
+                if os.path.isfile(path):
+                    try:
+                        candidates.append((os.path.getmtime(path), path))
+                    except Exception:
+                        continue
+        except Exception:
+            return None
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    def _log_tailer_loop(self, server_dir: str, stop_event: threading.Event):
+        path = None
+        fp = None
+        pos = 0
+        try:
+            while not stop_event.is_set():
+                picked = self._pick_log_file(server_dir)
+                if picked and picked != path:
+                    try:
+                        if fp:
+                            fp.close()
+                    except Exception:
+                        pass
+                    path = picked
+                    self._log_tailer_path = path
+                    try:
+                        fp = open(path, "r", encoding="utf-8", errors="replace")
+                        fp.seek(0, os.SEEK_END)
+                        pos = fp.tell()
+                    except Exception:
+                        fp = None
+                        path = None
+                        self._log_tailer_path = None
+
+                if not fp:
+                    stop_event.wait(1.0)
+                    continue
+
+                fp.seek(pos)
+                line = fp.readline()
+                if not line:
+                    try:
+                        pos = fp.tell()
+                    except Exception:
+                        pos = 0
+                    stop_event.wait(0.25)
+                    continue
+
+                pos = fp.tell()
+                self.server_queue.put(line)
+                parsed = self._parse_player_event(line)
+                if parsed:
+                    self.server_queue.put(parsed)
+        finally:
+            try:
+                if fp:
+                    fp.close()
+            except Exception:
+                pass
+
+    def _match_player_death(self, line):
+        match = re.search(
+            r"\b(?P<player>[A-Za-z0-9_]+)\b.*\b(?:slain|killed|died|fell|burned|shot|exploded|blew|hit)\b",
+            line,
+            re.IGNORECASE,
+        )
+        if match:
+            return match.group("player").strip()
         return None
 
     def _update_server_status(self):
@@ -1538,7 +2075,8 @@ class App(tk.Tk):
     def _validate_server_menu(self):
         server_dir = self.server_dir_var.get().strip()
         errors = []
-        missing = server_dir_missing_files(server_dir)
+        backend_pref = (self.settings.get("server_backend", "auto") or "auto").lower()
+        missing = server_dir_missing_files(server_dir, preferred_backend=backend_pref)
         if missing:
             if missing == ["server folder"]:
                 errors.append(("server_dir", "Server folder is not set or not found."))

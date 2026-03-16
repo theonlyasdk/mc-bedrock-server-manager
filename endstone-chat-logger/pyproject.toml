@@ -1,0 +1,14 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "endstone-chat-logger"
+version = "0.1.0"
+description = "Logs player chat to server console for the MC Bedrock Server Manager."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["endstone"]
+
+[project.entry-points."endstone"]
+chat-logger = "endstone_chat_logger:ChatLoggerPlugin"

@@ -140,11 +140,20 @@
             <a class="nav-link active" id="nav-details" onclick="showSection('details')">
               <i class="bi bi-speedometer2 me-2"></i>Dashboard
             </a>
+            <a class="nav-link text-white" id="nav-console" onclick="showSection('console')">
+              <i class="bi bi-terminal-fill me-2"></i>Server Console
+            </a>
             <a class="nav-link text-white" id="nav-properties" onclick="showSection('properties')">
               <i class="bi bi-gear-fill me-2"></i>Server Properties
             </a>
             <a class="nav-link text-white" id="nav-backups" onclick="showSection('backups')">
               <i class="bi bi-archive-fill me-2"></i>World Backups
+            </a>
+            <a class="nav-link text-white" id="nav-macros" onclick="showSection('macros')">
+              <i class="bi bi-lightning-charge me-2"></i>Quick Macros
+            </a>
+            <a class="nav-link text-white" id="nav-toolbox" onclick="showSection('toolbox')">
+              <i class="bi bi-tools me-2"></i>Toolbox
             </a>
             <a class="nav-link text-white" id="nav-settings" onclick="showSection('settings')">
               <i class="bi bi-sliders me-2"></i>Settings
@@ -155,7 +164,7 @@
 
       <!-- Page Content -->
       <div id="page-content-wrapper">
-        <div class="container-fluid p-0 pb-5">
+        <div class="page-container-wrapper container-fluid p-0">
           {% block page %}{% endblock %}
 
     <!-- Modals -->
@@ -164,18 +173,19 @@
       <div class="modal-dialog">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title">Edit Property</h5>
+            <h5 class="modal-title" id="propertyModalTitle">Property</h5>
             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body">
             <form id="editPropertyForm">
               <div class="mb-3">
                 <label for="propKey" class="form-label">Property Name</label>
-                <input type="text" class="form-control" id="propKey" readonly disabled>
+                <input type="text" class="form-control" id="propKey">
+                <div class="form-text">Enter the property key.</div>
               </div>
               <div class="mb-3">
                 <label for="propValue" class="form-label">Value</label>
-                <input type="text" class="form-control" id="propValue" required>
+                <input type="text" class="form-control" id="propValue">
               </div>
             </form>
           </div>
@@ -267,6 +277,117 @@
       </div>
     </div>
 
+    <div class="modal fade" id="motdColorModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered modal-sm">
+        <div class="modal-content bg-dark border-0">
+          <div class="modal-header border-bottom border-secondary mb-3 pb-2">
+            <h5 class="modal-title">MOTD Colors</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body pt-0">
+            <div class="motd-color-grid">
+              <button type="button" class="motd-color-swatch" data-motd-color-code="0" style="--motd-color:#000000"><span class="motd-color-label">Black</span></button>
+              <button type="button" class="motd-color-swatch" data-motd-color-code="1" style="--motd-color:#0000AA"><span class="motd-color-label">Dark Blue</span></button>
+              <button type="button" class="motd-color-swatch" data-motd-color-code="2" style="--motd-color:#00AA00"><span class="motd-color-label">Dark Green</span></button>
+              <button type="button" class="motd-color-swatch" data-motd-color-code="3" style="--motd-color:#00AAAA"><span class="motd-color-label">Dark Aqua</span></button>
+              <button type="button" class="motd-color-swatch" data-motd-color-code="4" style="--motd-color:#AA0000"><span class="motd-color-label">Dark Red</span></button>
+              <button type="button" class="motd-color-swatch" data-motd-color-code="5" style="--motd-color:#AA00AA"><span class="motd-color-label">Dark Purple</span></button>
+              <button type="button" class="motd-color-swatch" data-motd-color-code="6" style="--motd-color:#FFAA00"><span class="motd-color-label">Gold</span></button>
+              <button type="button" class="motd-color-swatch" data-motd-color-code="7" style="--motd-color:#AAAAAA"><span class="motd-color-label">Gray</span></button>
+              <button type="button" class="motd-color-swatch" data-motd-color-code="8" style="--motd-color:#555555"><span class="motd-color-label">Dark Gray</span></button>
+              <button type="button" class="motd-color-swatch" data-motd-color-code="9" style="--motd-color:#5555FF"><span class="motd-color-label">Blue</span></button>
+              <button type="button" class="motd-color-swatch" data-motd-color-code="a" style="--motd-color:#55FF55"><span class="motd-color-label">Green</span></button>
+              <button type="button" class="motd-color-swatch" data-motd-color-code="b" style="--motd-color:#55FFFF"><span class="motd-color-label">Aqua</span></button>
+              <button type="button" class="motd-color-swatch" data-motd-color-code="c" style="--motd-color:#FF5555"><span class="motd-color-label">Red</span></button>
+              <button type="button" class="motd-color-swatch" data-motd-color-code="d" style="--motd-color:#FF55FF"><span class="motd-color-label">Light Purple</span></button>
+              <button type="button" class="motd-color-swatch" data-motd-color-code="e" style="--motd-color:#FFFF55"><span class="motd-color-label">Yellow</span></button>
+              <button type="button" class="motd-color-swatch" data-motd-color-code="f" style="--motd-color:#FFFFFF"><span class="motd-color-label">White</span></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade" id="quickMacroModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-md modal-dialog-centered">
+        <div class="modal-content bg-dark border-secondary">
+          <div class="modal-header border-0 pb-1">
+            <h5 class="modal-title" id="quickMacroModalTitle">New Quick Macro</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+                <div class="modal-body">
+                  <form id="quickMacroForm">
+                    <input type="hidden" id="quickMacroId" />
+                    <div class="mb-3">
+                      <label for="quickMacroIcon" class="form-label small text-muted">Macro Icon</label>
+                      <select id="quickMacroIcon" class="form-select form-select-sm">
+                        <option value="bi-rocket-takeoff">Rocket</option>
+                        <option value="bi-lightning-charge">Lightning</option>
+                        <option value="bi-controller">Controller</option>
+                        <option value="bi-command">Command</option>
+                        <option value="bi-broadcast-pin">Broadcast</option>
+                        <option value="bi-gear-fill">Gear</option>
+                        <option value="custom">Custom...</option>
+                      </select>
+                    </div>
+                    <div class="mb-3 d-none" id="quickMacroCustomIconWrapper">
+                      <label for="quickMacroCustomIcon" class="form-label small text-muted">Custom Icon Class</label>
+                      <input
+                        id="quickMacroCustomIcon"
+                        class="form-control form-control-sm bg-dark border-secondary text-white"
+                        placeholder="bi-icon"
+                      />
+                      <div class="small text-muted">
+                        See the <a href="https://icons.getbootstrap.com/" target="_blank" rel="noopener">Bootstrap Icons</a> docs for more options.
+                      </div>
+                    </div>
+                    <div class="mb-3">
+                      <label for="quickMacroTitle" class="form-label small text-muted">Macro Title</label>
+                      <input id="quickMacroTitle" class="form-control form-control-sm bg-dark border-secondary text-white" placeholder="Example: Kick All" required />
+                    </div>
+                    <div class="mb-3">
+                      <label for="quickMacroCommands" class="form-label small text-muted">Macro Commands</label>
+                      <textarea
+                        id="quickMacroCommands"
+                        class="form-control form-control-sm bg-dark border-secondary text-white"
+                        rows="3"
+                        placeholder="Enter one command per line"
+                        required
+                      ></textarea>
+                    </div>
+                    <div class="mb-3">
+                      <label for="quickMacroTrigger" class="form-label small text-muted">Trigger</label>
+                      <select id="quickMacroTrigger" class="form-select form-select-sm">
+                        <option value="manual">Manual</option>
+                        <option value="interval">Interval</option>
+                        <option value="player_join">Player login</option>
+                        <option value="player_leave">Player leave</option>
+                        <option value="player_death">Player death</option>
+                      </select>
+                      <div class="small text-muted mt-2 ms-1">Use <code>{player}</code> in commands to substitute player username.</div>
+                    </div>
+                    <div class="mb-3">
+                      <label for="quickMacroInterval" class="form-label small text-muted">Macro Interval (seconds)</label>
+                      <input
+                        type="number"
+                        id="quickMacroInterval"
+                        class="form-control form-control-sm bg-dark border-secondary text-white"
+                        min="1"
+                        placeholder="Optional (e.g., 60)"
+                      />
+                      <div class="small text-muted">Leave empty for manual-only macros.</div>
+                    </div>
+                  </form>
+                </div>
+                <div class="modal-footer border-0 pt-0">
+                  <div class="w-100 d-flex align-items-center">
+                    <button type="button" id="quickMacroDeleteBtn" class="btn btn-sm btn-outline-danger d-none me-auto">Delete</button>
+                    <button type="submit" form="quickMacroForm" class="btn btn-sm btn-primary ms-auto">Save macro</button>
+                  </div>
+                </div>
+        </div>
+      </div>
+    </div>
     <script
       src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
       crossorigin="anonymous"

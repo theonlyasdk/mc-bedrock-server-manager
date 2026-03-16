@@ -1,6 +1,9 @@
 {
   "server_dir": "/home/user/Downloads/bedrockserver/bedrock-server-1.26.3.1",
   "backups_dir": "/home/user/Downloads/bedrockserver/server-backups",
+  "server_backend": "endstone",
+  "autostart_server": false,
+  "autostart_web_manager": true,
   "web_manager_host": "0.0.0.0",
   "web_manager_port": 5050
 }

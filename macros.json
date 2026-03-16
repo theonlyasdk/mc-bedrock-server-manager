@@ -1,0 +1,24 @@
+[
+  {
+    "id": "fad66035-c893-44c3-a8ea-755298994206",
+    "title": "Login message",
+    "icon": "bi-box-arrow-in-right",
+    "commands": [
+      "tellraw {player} {\"rawtext\":[{\"text\":\"Welcome, {player}!\"}]}"
+    ],
+    "interval_seconds": 0,
+    "trigger": "player_join",
+    "times_ran": 2,
+    "created_at": 1773601976.88846
+  },
+  {
+    "id": "5af140d6-189d-4a80-a489-cf9d1941bfc7",
+    "title": "Time set day",
+    "icon": "bi-rocket-takeoff",
+    "commands": [
+      "time set day"
+    ],
+    "interval_seconds": 0,
+    "created_at": 1773583693.4053485
+  }
+]

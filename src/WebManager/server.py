@@ -7,9 +7,17 @@ from werkzeug.serving import make_server
 
 
 class WebManagerServer:
-    def __init__(self, status_provider: Optional[Callable[[], dict]] = None, command_handler: Optional[Callable[[str, dict], dict]] = None):
+    def __init__(
+        self,
+        status_provider: Optional[Callable[[], dict]] = None,
+        command_handler: Optional[Callable[[str, dict], dict]] = None,
+        macros_provider: Optional[Callable[[], list]] = None,
+        macro_creator: Optional[Callable[[dict], dict]] = None,
+    ):
         self.status_provider = status_provider
         self.command_handler = command_handler
+        self.macros_provider = macros_provider
+        self.macro_creator = macro_creator
         self.host = "127.0.0.1"
         self.port = 5050
         self._server = None
@@ -29,6 +37,23 @@ class WebManagerServer:
             view_func=self._run_command,
             methods=["POST"],
         )
+        self.app.add_url_rule(
+            "/api/macros",
+            endpoint="macros",
+            view_func=self._macros_handler,
+            methods=["GET", "POST"],
+        )
+
+    @staticmethod
+    def _normalize_macros_payload(payload):
+        macros = []
+        presets = []
+        if isinstance(payload, dict):
+            macros = payload.get("macros") or []
+            presets = payload.get("presets") or []
+        elif isinstance(payload, list):
+            macros = payload
+        return macros or [], presets or []
 
     def _render_index(self):
         return render_template("index.html")
@@ -40,6 +65,33 @@ class WebManagerServer:
             return jsonify(self.status_provider())
         except Exception as exc:
             return jsonify({"success": False, "error": str(exc)}), 500
+
+    def _macros_handler(self):
+        if request.method == "GET":
+            if not self.macros_provider:
+                return jsonify({"success": False, "error": "Macro provider unavailable"}), 503
+            try:
+                payload = self.macros_provider()
+                macros, presets = self._normalize_macros_payload(payload)
+                return jsonify({"macros": macros, "presets": presets})
+            except Exception as exc:
+                return jsonify({"success": False, "error": str(exc)}), 500
+
+        if request.method == "POST":
+            if not self.macro_creator:
+                return jsonify({"success": False, "error": "Macro creator unavailable"}), 503
+            payload = request.get_json(silent=True) or {}
+            if not payload:
+                return jsonify({"success": False, "error": "Missing macro payload"}), 400
+            try:
+                new_macro = self.macro_creator(payload)
+                if isinstance(new_macro, dict) and new_macro.get("error"):
+                    return jsonify({"success": False, "error": new_macro["error"]}), 400
+                macros_payload = self.macros_provider() if self.macros_provider else []
+                macros, presets = self._normalize_macros_payload(macros_payload)
+                return jsonify({"success": True, "macro": new_macro, "macros": macros, "presets": presets})
+            except Exception as exc:
+                return jsonify({"success": False, "error": str(exc)}), 500
 
     def _run_command(self):
         payload = request.get_json(silent=True) or {}
