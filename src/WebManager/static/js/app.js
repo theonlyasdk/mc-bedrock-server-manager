@@ -18,6 +18,7 @@ let backupsSortDir = "asc"; // asc | desc
 let autoRefreshTimer = null;
 let lastChatLogLine = null;
 let mentionPlayers = [];
+let mentionTeams = [];
 
 const STORAGE_KEYS = {
   sidebarCollapsed: "mcbsm.sidebarCollapsed",
@@ -100,6 +101,8 @@ const quickMacroTitleInput = document.getElementById("quickMacroTitle");
 const quickMacroCommandsInput = document.getElementById("quickMacroCommands");
 const quickMacroTriggerSelect = document.getElementById("quickMacroTrigger");
 const quickMacroIntervalInput = document.getElementById("quickMacroInterval");
+const quickMacroKeywordWrapper = document.getElementById("quickMacroKeywordWrapper");
+const quickMacroKeywordInput = document.getElementById("quickMacroKeyword");
 const quickMacroIdInput = document.getElementById("quickMacroId");
 const quickMacroDeleteBtn = document.getElementById("quickMacroDeleteBtn");
 const quickMacroTriggerBtn = document.getElementById("openQuickMacroModalBtn");
@@ -128,6 +131,14 @@ const toolboxCopyLabel = document.getElementById("toolboxCopyLabel");
 const toolboxCopyDropdownMenu = document.getElementById("toolboxCopyDropdownMenu");
 const resourceUsageRow = document.getElementById("resourceUsageRow");
 const cpuVBar = document.getElementById("cpuVBar");
+
+const macroOutputModalEl = document.getElementById("macroOutputModal");
+const macroOutputModal = macroOutputModalEl ? new bootstrap.Modal(macroOutputModalEl) : null;
+const macroOutputModalTitle = document.getElementById("macroOutputModalTitle");
+const macroOutputMeta = document.getElementById("macroOutputMeta");
+const macroOutputPre = document.getElementById("macroOutputPre");
+const macroOutputCopyBtn = document.getElementById("macroOutputCopyBtn");
+const macroOutputDownloadBtn = document.getElementById("macroOutputDownloadBtn");
 const memVBar = document.getElementById("memVBar");
 const cpuUsageText = document.getElementById("cpuUsageText");
 const memUsageText = document.getElementById("memUsageText");
@@ -147,6 +158,7 @@ const cpuHistory = [];
 const memHistory = [];
 let previousServerRunning = null;
 let toolboxCopyType = "say";
+let toolboxCopyFeedbackTimer = null;
 
 function toggleSidebar() {
   wrapper.classList.toggle("toggled");
@@ -216,6 +228,7 @@ async function sendCommand(action, data = null) {
     if (result.success) {
       shouldRefresh = true;
     }
+    return result.result;
   } catch (err) {
     handleFetchError(err);
   } finally {
@@ -360,6 +373,8 @@ function updateUI(data) {
   const web = data.web_manager || {};
   const players = data.players || [];
   mentionPlayers = Array.isArray(players) ? players.map((p) => String(p || "").trim()).filter(Boolean) : [];
+  const teams = data.teams || data.scoreboard_teams || [];
+  mentionTeams = Array.isArray(teams) ? teams.map((t) => String(t || "").trim()).filter(Boolean) : [];
   const operators = new Set(data.operators || []);
   const logs = data.logs || [];
   const network = data.network || {};
@@ -628,15 +643,44 @@ function updateUI(data) {
 function initCommandMentions() {
   if (!commandInput || !commandMentionPopup || !commandMentionList) return;
   let activeIndex = 0;
-  let lastAtIndex = null;
-  let lastQueryEnd = null;
+  let replaceStart = null;
+  let replaceEnd = null;
+
+  const SELECTOR_BASE_ITEMS = [
+    { label: "@a (all players)", value: "@a" },
+    { label: "@p (nearest player)", value: "@p" },
+    { label: "@r (random player)", value: "@r" },
+    { label: "@s (self)", value: "@s" },
+    { label: "@e (all entities)", value: "@e" },
+  ];
+
+  const SELECTOR_KEYS_COMMON = [
+    "name",
+    "r",
+    "rm",
+    "x",
+    "y",
+    "z",
+    "dx",
+    "dy",
+    "dz",
+    "c",
+    "l",
+    "lm",
+    "m",
+    "tag",
+    "team",
+    "gamemode",
+  ];
+  const SELECTOR_KEYS_ENTITY = ["type", "family"].concat(SELECTOR_KEYS_COMMON);
+  const GAMEMODE_VALUES = ["survival", "creative", "adventure", "spectator", "0", "1", "2", "3"];
 
   function hidePopup() {
     commandMentionPopup.classList.add("d-none");
     commandMentionList.innerHTML = "";
     activeIndex = 0;
-    lastAtIndex = null;
-    lastQueryEnd = null;
+    replaceStart = null;
+    replaceEnd = null;
   }
 
   function showPopup() {
@@ -659,10 +703,10 @@ function initCommandMentions() {
   function applySelection(value) {
     const text = commandInput.value || "";
     const cursor = typeof commandInput.selectionStart === "number" ? commandInput.selectionStart : text.length;
-    const atIndex = lastAtIndex;
-    const endIndex = lastQueryEnd ?? cursor;
-    if (typeof atIndex !== "number" || atIndex < 0) return;
-    const before = text.slice(0, atIndex);
+    const startIndex = typeof replaceStart === "number" ? replaceStart : null;
+    const endIndex = typeof replaceEnd === "number" ? replaceEnd : null;
+    if (startIndex === null || endIndex === null || startIndex < 0 || endIndex < startIndex) return;
+    const before = text.slice(0, startIndex);
     const after = text.slice(endIndex);
     const next = `${before}${value}${after}`;
     commandInput.value = next;
@@ -672,27 +716,125 @@ function initCommandMentions() {
     commandInput.focus();
   }
 
-  function buildItems(query) {
+  function selectorKeyListForBase(base) {
+    if (base === "@e") return SELECTOR_KEYS_ENTITY;
+    return SELECTOR_KEYS_COMMON;
+  }
+
+  function normalizeSelectorBase(base) {
+    const b = String(base || "").trim();
+    if (!b.startsWith("@")) return null;
+    if (/^@[apres]$/.test(b)) return b;
+    return null;
+  }
+
+  function buildItemsForSelectorBaseQuery(query) {
     const q = String(query || "").toLowerCase();
-    const filtered = mentionPlayers.filter((name) => name.toLowerCase().includes(q));
-    const items = filtered.map((name) => {
+    const items = [];
+    items.push(...SELECTOR_BASE_ITEMS.filter((it) => it.value.toLowerCase().startsWith(`@${q}`)));
+    const filteredPlayers = mentionPlayers.filter((name) => name.toLowerCase().includes(q));
+    filteredPlayers.slice(0, 15).forEach((name) => {
       const selector = `@p[name=${JSON.stringify(name)}]`;
-      return { label: name, value: selector };
+      items.push({ label: `Player: ${name}`, value: selector });
     });
-    items.push({ label: "Everyone", value: "@a" });
     return items;
+  }
+
+  function buildItemsForSelectorArgKey(base, keyPrefix) {
+    const keys = selectorKeyListForBase(base);
+    const q = String(keyPrefix || "").toLowerCase();
+    return keys
+      .filter((k) => k.toLowerCase().startsWith(q))
+      .map((k) => ({ label: `${k}=`, value: `${k}=` }));
+  }
+
+  function buildItemsForSelectorArgValue(base, key, valuePrefix) {
+    const k = String(key || "").trim().toLowerCase();
+    const q = String(valuePrefix || "").toLowerCase();
+    if (k === "name") {
+      return mentionPlayers
+        .filter((n) => n.toLowerCase().includes(q))
+        .slice(0, 15)
+        .map((n) => ({ label: n, value: JSON.stringify(n) }));
+    }
+    if (k === "team") {
+      return mentionTeams
+        .filter((t) => t.toLowerCase().includes(q))
+        .slice(0, 15)
+        .map((t) => ({ label: t, value: JSON.stringify(t) }));
+    }
+    if (k === "gamemode") {
+      return GAMEMODE_VALUES.filter((gm) => gm.toLowerCase().startsWith(q)).map((gm) => ({ label: gm, value: gm }));
+    }
+    if (k === "type" && base === "@e") {
+      const defaults = ["player"];
+      return defaults.filter((t) => t.toLowerCase().startsWith(q)).map((t) => ({ label: t, value: t }));
+    }
+    return [];
+  }
+
+  function getTokenAtCursor(text, cursor) {
+    const safeCursor = Math.max(0, Math.min(text.length, cursor));
+    const left = text.slice(0, safeCursor);
+    const lastWs = Math.max(left.lastIndexOf(" "), left.lastIndexOf("\n"), left.lastIndexOf("\t"));
+    const start = lastWs < 0 ? 0 : lastWs + 1;
+    return { start, end: safeCursor, token: text.slice(start, safeCursor) };
   }
 
   function updatePopupFromInput() {
     const text = commandInput.value || "";
     const cursor = typeof commandInput.selectionStart === "number" ? commandInput.selectionStart : text.length;
-    const atIndex = text.lastIndexOf("@", cursor - 1);
+    const { start, token } = getTokenAtCursor(text, cursor);
+    const atIndex = token.lastIndexOf("@");
     if (atIndex < 0) return hidePopup();
-    const query = text.slice(atIndex + 1, cursor);
-    if (/\s|\[|\]/.test(query)) return hidePopup();
-    lastAtIndex = atIndex;
-    lastQueryEnd = cursor;
-    const items = buildItems(query);
+    const absAtIndex = start + atIndex;
+    const fragment = text.slice(absAtIndex, cursor);
+
+    // Base selector / player mention mode: "@", "@a", "@pla", etc. (no brackets yet)
+    if (!fragment.includes("[") && !fragment.includes("]")) {
+      const query = fragment.slice(1);
+      if (/\s/.test(query)) return hidePopup();
+      replaceStart = absAtIndex;
+      replaceEnd = cursor;
+      const items = buildItemsForSelectorBaseQuery(query);
+      if (items.length === 0) return hidePopup();
+      activeIndex = Math.max(0, Math.min(activeIndex, items.length - 1));
+      renderList(items);
+      showPopup();
+      return;
+    }
+
+    // Selector argument mode: "@a[...<cursor>" (must be inside an unclosed bracket)
+    const openIdx = fragment.indexOf("[");
+    const closeIdx = fragment.indexOf("]");
+    if (openIdx < 0 || (closeIdx >= 0 && closeIdx < fragment.length - 1)) return hidePopup();
+    const baseRaw = fragment.slice(0, openIdx);
+    const base = normalizeSelectorBase(baseRaw);
+    if (!base) return hidePopup();
+
+    const inside = fragment.slice(openIdx + 1); // no closing bracket
+    const lastComma = inside.lastIndexOf(",");
+    const partStart = lastComma >= 0 ? lastComma + 1 : 0;
+    const part = inside.slice(partStart);
+    const eqIdx = part.indexOf("=");
+
+    if (eqIdx < 0) {
+      const keyPrefix = part.trim();
+      replaceStart = absAtIndex + openIdx + 1 + partStart;
+      replaceEnd = cursor;
+      const items = buildItemsForSelectorArgKey(base, keyPrefix);
+      if (items.length === 0) return hidePopup();
+      activeIndex = Math.max(0, Math.min(activeIndex, items.length - 1));
+      renderList(items);
+      showPopup();
+      return;
+    }
+
+    const key = part.slice(0, eqIdx).trim();
+    const valuePrefix = part.slice(eqIdx + 1).trim();
+    replaceStart = absAtIndex + openIdx + 1 + partStart + eqIdx + 1;
+    replaceEnd = cursor;
+    const items = buildItemsForSelectorArgValue(base, key, valuePrefix);
     if (items.length === 0) return hidePopup();
     activeIndex = Math.max(0, Math.min(activeIndex, items.length - 1));
     renderList(items);
@@ -842,6 +984,10 @@ function renderPropertiesTable(animateDiff) {
   const propKeys = Object.keys(propertiesData).sort();
   const propsCount = document.getElementById("propsCount");
   if (propsCount) propsCount.textContent = `${propKeys.length} items`;
+  const noPropsWarning = document.getElementById("noServerPropertiesWarning");
+  if (noPropsWarning) {
+    noPropsWarning.classList.toggle("d-none", propKeys.length !== 0);
+  }
   const nextPropertiesMap = new Map();
   propKeys.forEach((key) => {
     nextPropertiesMap.set(key, propertiesData[key]);
@@ -1233,11 +1379,16 @@ function initMotdToolbox() {
   }
 
   toolboxSendEveryoneBtn?.addEventListener("click", sendToolboxMessageToEveryone);
-  toolboxCopyBtn?.addEventListener("click", () => copyToolboxCommand(toolboxCopyType));
-  toolboxCopyDropdownMenu?.addEventListener("click", (event) => {
+  toolboxCopyBtn?.addEventListener("click", async () => {
+    const ok = await copyToolboxCommand(toolboxCopyType);
+    if (ok) showToolboxCopiedFeedback();
+  });
+  toolboxCopyDropdownMenu?.addEventListener("click", async (event) => {
     const button = event.target?.closest?.("[data-copy-type]");
     if (!button || !button.dataset.copyType) return;
     setToolboxCopyType(button.dataset.copyType);
+    const ok = await copyToolboxCommand(button.dataset.copyType);
+    if (ok) showToolboxCopiedFeedback();
   });
   setToolboxCopyType(toolboxCopyType);
   updateMotdPreview();
@@ -1283,29 +1434,35 @@ function copyToolboxCommand(type) {
   if (!formatted) return;
   const command = buildToolboxCommand(type, formatted);
   if (!command) return;
-  copyTextToClipboard(command);
+  return copyTextToClipboard(command);
 }
 
 function copyTextToClipboard(text) {
   if (!text) return;
   if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).catch(() => {
-      fallbackCopyText(text);
-    });
+    return navigator.clipboard
+      .writeText(text)
+      .then(() => true)
+      .catch(() => fallbackCopyText(text));
   } else {
-    fallbackCopyText(text);
+    return fallbackCopyText(text);
   }
 
   function fallbackCopyText(value) {
-    const textarea = document.createElement("textarea");
-    textarea.value = value;
-    textarea.setAttribute("readonly", "");
-    textarea.style.position = "absolute";
-    textarea.style.left = "-9999px";
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand("copy");
-    document.body.removeChild(textarea);
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = value;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "absolute";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      return Promise.resolve(Boolean(ok));
+    } catch (_e) {
+      return Promise.resolve(false);
+    }
   }
 }
 
@@ -1315,6 +1472,7 @@ function setToolboxCopyType(type) {
   if (toolboxCopyLabel) {
     toolboxCopyLabel.textContent = "Copy";
   }
+  clearToolboxCopiedFeedback();
   if (!toolboxCopyDropdownMenu) return;
   toolboxCopyDropdownMenu.querySelectorAll("[data-copy-type]").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.copyType === normalized);
@@ -1326,6 +1484,27 @@ function updateToolboxCopyButtonState() {
   const hasInput = Boolean((motdInput.value || "").trim());
   toolboxCopyBtn.disabled = !hasInput;
   if (toolboxCopyToggleBtn) toolboxCopyToggleBtn.disabled = !hasInput;
+  if (toolboxCopyLabel && toolboxCopyLabel.textContent !== "Copy") {
+    clearToolboxCopiedFeedback();
+    toolboxCopyLabel.textContent = "Copy";
+  }
+}
+
+function clearToolboxCopiedFeedback() {
+  if (toolboxCopyFeedbackTimer) {
+    clearTimeout(toolboxCopyFeedbackTimer);
+    toolboxCopyFeedbackTimer = null;
+  }
+}
+
+function showToolboxCopiedFeedback() {
+  if (!toolboxCopyLabel) return;
+  clearToolboxCopiedFeedback();
+  toolboxCopyLabel.textContent = "Copied!";
+  toolboxCopyFeedbackTimer = setTimeout(() => {
+    toolboxCopyFeedbackTimer = null;
+    if (toolboxCopyLabel) toolboxCopyLabel.textContent = "Copy";
+  }, 1200);
 }
 
 function insertMotdCode(code) {
@@ -1688,7 +1867,10 @@ function initQuickMacros() {
   quickMacroModalEl?.addEventListener("hidden.bs.modal", resetMacroForm);
   quickMacroDeleteBtn?.addEventListener("click", handleMacroDelete);
   quickMacroIconInput?.addEventListener("change", updateQuickMacroCustomIconVisibility);
-  quickMacroTriggerSelect?.addEventListener("change", updateQuickMacroIntervalVisibility);
+  quickMacroTriggerSelect?.addEventListener("change", () => {
+    updateQuickMacroIntervalVisibility();
+    updateQuickMacroKeywordVisibility();
+  });
   updateQuickMacroCustomIconVisibility();
   quickMacroTriggerBtn?.addEventListener("click", () => resetMacroForm());
   fetchQuickMacros();
@@ -1738,12 +1920,20 @@ function renderQuickMacros() {
     const meta =
       trigger === "player_join"
         ? "On player login"
+        : trigger === "player_connected"
+        ? "On player connect"
         : trigger === "player_leave"
         ? "On player leave"
         : trigger === "player_death"
         ? "On player death"
+        : trigger === "server_started"
+        ? "On server start"
+        : trigger === "server_stopped"
+        ? "On server stop"
         : trigger === "interval" && macro.interval_seconds && Number(macro.interval_seconds) > 0
         ? `Auto every ${macro.interval_seconds}s`
+        : trigger === "chat_keyword" && macro.chat_keyword
+        ? `On chat keyword: ${macro.chat_keyword}`
         : "Manual";
     const header = document.createElement("div");
     header.className = "d-flex align-items-center gap-3";
@@ -1767,8 +1957,14 @@ function renderQuickMacros() {
     editBtn.className = "btn btn-outline-secondary edit-btn";
     editBtn.textContent = "Edit";
     editBtn.addEventListener("click", () => openMacroEditor(macro));
+    const outputBtn = document.createElement("button");
+    outputBtn.type = "button";
+    outputBtn.className = "btn btn-outline-light edit-btn";
+    outputBtn.textContent = "Output";
+    outputBtn.addEventListener("click", () => openMacroOutput(macro));
     actions.appendChild(executeBtn);
     actions.appendChild(editBtn);
+    actions.appendChild(outputBtn);
     card.appendChild(header);
     card.appendChild(actions);
     col.appendChild(card);
@@ -1819,8 +2015,12 @@ function renderPresetMacros() {
 const TRIGGER_CANONICAL = {
   player_login: "player_join",
   player_join: "player_join",
+  player_connected: "player_connected",
   player_leave: "player_leave",
   player_death: "player_death",
+  server_started: "server_started",
+  server_stopped: "server_stopped",
+  chat_keyword: "chat_keyword",
 };
 
 function normalizeMacroTrigger(trigger) {
@@ -1861,7 +2061,7 @@ function updateQuickMacroIntervalVisibility() {
 
 async function activateMacro(macro) {
   if (!macro) return;
-  await sendCommand("run_macro", { macro_id: macro.id, commands: macro.commands });
+  await sendCommand("run_macro", { macro_id: macro.id, macro_title: macro.title, commands: macro.commands });
   fetchQuickMacros();
 }
 
@@ -1889,6 +2089,14 @@ async function handleMacroSubmit(event) {
     commands,
     trigger,
   };
+  if (trigger === "chat_keyword") {
+    const keyword = (quickMacroKeywordInput?.value || "").trim();
+    if (!keyword) {
+      showError("Chat keyword is required for chat keyword macros.");
+      return;
+    }
+    payload.chat_keyword = keyword;
+  }
   if (trigger === "interval" && intervalValue) {
     const parsed = Number(intervalValue);
     if (!Number.isNaN(parsed) && parsed > 0) {
@@ -1974,6 +2182,9 @@ function openMacroEditor(macro) {
   if (quickMacroIntervalInput) {
     quickMacroIntervalInput.value = macro.interval_seconds ? String(macro.interval_seconds) : "";
   }
+  if (quickMacroKeywordInput) {
+    quickMacroKeywordInput.value = macro.chat_keyword || "";
+  }
   if (quickMacroTriggerSelect) {
     const triggerValue = normalizeMacroTrigger(
       macro.trigger || (macro.interval_seconds ? "interval" : "manual")
@@ -1982,6 +2193,7 @@ function openMacroEditor(macro) {
   }
   updateQuickMacroCustomIconVisibility();
   updateQuickMacroIntervalVisibility();
+  updateQuickMacroKeywordVisibility();
   if (quickMacroModalTitle) {
     quickMacroModalTitle.textContent = "Editing macro";
   }
@@ -1996,6 +2208,9 @@ function resetMacroForm() {
   if (quickMacroIntervalInput) {
     quickMacroIntervalInput.value = "";
   }
+  if (quickMacroKeywordInput) {
+    quickMacroKeywordInput.value = "";
+  }
   if (quickMacroTriggerSelect) {
     quickMacroTriggerSelect.value = "manual";
   }
@@ -2007,6 +2222,7 @@ function resetMacroForm() {
   }
   updateQuickMacroCustomIconVisibility();
   updateQuickMacroIntervalVisibility();
+  updateQuickMacroKeywordVisibility();
   quickMacroDeleteBtn?.classList.add("d-none");
   quickMacroDeleteBtn && (quickMacroDeleteBtn.disabled = false);
 }
@@ -2026,4 +2242,78 @@ function updateQuickMacroIntervalVisibility() {
   if (!wrapper) return;
   const trigger = (quickMacroTriggerSelect.value || "manual").toLowerCase();
   wrapper.classList.toggle("d-none", trigger !== "interval");
+}
+
+function updateQuickMacroKeywordVisibility() {
+  if (!quickMacroTriggerSelect || !quickMacroKeywordWrapper) return;
+  const trigger = (quickMacroTriggerSelect.value || "manual").toLowerCase();
+  quickMacroKeywordWrapper.classList.toggle("d-none", trigger !== "chat_keyword");
+}
+
+function formatMacroRunLog(run) {
+  if (!run) return "";
+  const lines = [];
+  const title = run.macro_title ? `${run.macro_title}` : "Macro";
+  lines.push(`${title} (run ${run.id})`);
+  if (run.started_at) lines.push(`Started: ${new Date(run.started_at * 1000).toLocaleString()}`);
+  if (run.finished_at) lines.push(`Finished: ${new Date(run.finished_at * 1000).toLocaleString()}`);
+  if (typeof run.success === "boolean") lines.push(`Success: ${run.success ? "Yes" : "No"}`);
+  lines.push("");
+  const steps = Array.isArray(run.steps) ? run.steps : [];
+  steps.forEach((step, i) => {
+    lines.push(`Step ${i + 1}: ${step.success ? "OK" : "FAIL"}  ${step.command}`);
+    const out = Array.isArray(step.output) ? step.output : [];
+    if (step.truncated) lines.push("(output truncated)");
+    out.forEach((l) => lines.push(String(l).replace(/\n$/, "")));
+    lines.push("");
+  });
+  return lines.join("\n").trim() + "\n";
+}
+
+async function openMacroOutput(macro) {
+  if (!macroOutputModal || !macro || !macro.id) return;
+  try {
+    const response = await fetch("/api/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "get_latest_macro_run", data: { macro_id: macro.id } }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Failed to load macro output.");
+    const run = payload.result?.run;
+    if (!run) throw new Error("No run data available.");
+    const text = formatMacroRunLog(run);
+    if (macroOutputModalTitle) macroOutputModalTitle.textContent = `Macro Output: ${macro.title || ""}`.trim();
+    if (macroOutputMeta) {
+      const parts = [];
+      if (run.started_at) parts.push(`Started ${new Date(run.started_at * 1000).toLocaleString()}`);
+      if (typeof run.success === "boolean") parts.push(run.success ? "Success" : "Failed");
+      macroOutputMeta.textContent = parts.join(" • ");
+    }
+    if (macroOutputPre) macroOutputPre.textContent = text;
+    if (macroOutputCopyBtn) {
+      macroOutputCopyBtn.onclick = async () => {
+        const ok = await copyTextToClipboard(text);
+        if (!ok) showError("Copy failed.");
+      };
+    }
+    if (macroOutputDownloadBtn) {
+      macroOutputDownloadBtn.onclick = () => {
+        const filename = `macro-run-${run.id}.log`;
+        const blob = new Blob([text], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 250);
+      };
+    }
+    macroOutputModal.show();
+  } catch (err) {
+    console.error(err);
+    showError(err.message || "Unable to load macro output.");
+  }
 }

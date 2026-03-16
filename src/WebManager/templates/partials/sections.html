@@ -282,6 +282,18 @@
             </div>
           </div>
             <div class="section-body">
+                <div id="noServerPropertiesWarning" class="alert alert-warning border-0 d-none" role="alert">
+                  <div class="d-flex gap-2 align-items-start">
+                    <i class="bi bi-exclamation-triangle-fill mt-1"></i>
+                    <div>
+                      <div class="fw-semibold">No server properties found.</div>
+                      <div class="small">
+                        Make sure your server folder is configured correctly and contains a valid <code>server.properties</code>.
+                        If this looks wrong, please file an issue and include your manager logs and server folder path.
+                      </div>
+                    </div>
+                  </div>
+                </div>
                 <div class="table-container table-flush">
                   <div class="table-responsive">
                     <table class="table table-dark table-hover mb-0 align-middle px-2 table-col-borders">

@@ -387,6 +387,19 @@ pre,
   corner-shape: squircle;
 }
 
+/* Ensure Bootstrap button groups render like the docs (global radius override breaks grouped corners) */
+.btn-group > .btn:not(:first-child),
+.btn-group > .btn-group:not(:first-child) > .btn {
+  border-top-left-radius: 0 !important;
+  border-bottom-left-radius: 0 !important;
+}
+
+.btn-group > .btn:not(:last-child),
+.btn-group > .btn-group:not(:last-child) > .btn {
+  border-top-right-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+}
+
 .modal-header {
   border-bottom-left-radius: 0 !important;
   border-bottom-right-radius: 0 !important;
@@ -671,38 +684,13 @@ tr:hover .edit-icon {
 
 .toolbox-toolbar .btn {
   min-width: 48px;
-  border-radius: 0.75rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0.45rem 0.75rem;
 }
 
 .toolbox-toolbar .btn i {
   font-size: 1rem;
-}
-
-.toolbox-copy-group .btn {
-  border-radius: 0 !important;
-}
-
-.toolbox-copy-group .btn + .btn {
-  margin-left: -1px;
-}
-
-.toolbox-copy-group .btn:first-child {
-  border-top-left-radius: 0.75rem !important;
-  border-bottom-left-radius: 0.75rem !important;
-}
-
-.toolbox-copy-group .btn:last-child {
-  border-top-right-radius: 0.75rem !important;
-  border-bottom-right-radius: 0.75rem !important;
-}
-
-.toolbox-copy-group .dropdown-toggle {
-  padding-left: 0.45rem;
-  padding-right: 0.45rem;
 }
 
 .command-mention-popup {

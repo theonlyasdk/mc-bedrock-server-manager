@@ -14,6 +14,7 @@ import zipfile
 from collections import deque
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
+from uuid import uuid4
 
 from constants import APP_AUTHOR, APP_LICENSE, APP_NAME
 from dialogs import confirm_dialog, prompt_string, show_validation_dialog
@@ -26,13 +27,30 @@ from server_validation import (
 from settings_store import load_settings, save_settings
 from theme import apply_theme
 from WebManager import WebManagerServer
-from macros import MacroScheduler, MacroStore
+from core_manager import ManagerCore
+from macros import MacroStore
 
 TRIGGER_CANONICAL = {
     "player_login": "player_join",
+    "player_connected": "player_connected",
     "player_join": "player_join",
     "player_leave": "player_leave",
     "player_death": "player_death",
+    "server_started": "server_started",
+    "server_stopped": "server_stopped",
+    "chat_keyword": "chat_keyword",
+}
+
+VALID_TRIGGERS = {
+    "manual",
+    "interval",
+    "player_connected",
+    "player_join",
+    "player_leave",
+    "player_death",
+    "server_started",
+    "server_stopped",
+    "chat_keyword",
 }
 
 MACROS_FILE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "macros.json"))
@@ -67,24 +85,28 @@ class App(tk.Tk):
         self.server_backend = None
         self._server_dir_running = None
         self._perf_prev = None
-        self.server_queue = queue.Queue()
-        self.live_players = set()
-        self.web_logs = deque(maxlen=200)
+        self.core = ManagerCore(settings=self.settings, macros_path=MACROS_FILE_PATH)
+        self.server_queue = self.core.server_queue
+        self.live_players = self.core.live_players
+        self.web_logs = self.core.web_logs
+        self._macro_runs_lock = threading.RLock()
+        self._macro_runs_by_id = {}
+        self._macro_run_ids_by_macro = {}
+        self._macro_run_requests: "queue.Queue[dict]" = queue.Queue()
+        self._active_macro_run = None
         self.cached_public_ip = "-"
         self.cached_local_ip = self._get_local_ip()
         threading.Thread(target=self._fetch_public_ip, daemon=True).start()
         self.web_manager_host_var = tk.StringVar()
         self.web_manager_port_var = tk.StringVar()
         self.web_manager_status_var = tk.StringVar(value="Web manager stopped.")
-        self.macro_store = MacroStore(MACROS_FILE_PATH)
-        self.macro_scheduler = MacroScheduler(self.macro_store, self._run_macro_commands)
+        self.macro_store: MacroStore = self.core.macro_store
         self.web_manager = WebManagerServer(
             status_provider=self._web_manager_status_payload,
             command_handler=self._web_manager_command_handler,
             macros_provider=self._macro_list_payload,
             macro_creator=self._macro_creator_handler,
         )
-        self.macro_scheduler.start()
         self.web_backup_in_progress = False
         self.web_backup_error = None
         self._log_tailer_stop = threading.Event()
@@ -436,9 +458,30 @@ class App(tk.Tk):
             macro_id = data.get("macro_id")
             commands = [str(c).strip() for c in commands if str(c).strip()]
             if commands:
-                self._run_macro_commands(commands, macro_id=macro_id)
-                return {"success": True}
+                macro_title = str(data.get("macro_title") or "").strip()
+                run_id = self._queue_macro_run(commands, macro_id=macro_id, macro_title=macro_title)
+                return {"success": True, "run_id": run_id}
             return {"error": "No commands provided"}
+        if action == "get_macro_run" and data:
+            run_id = str(data.get("run_id") or "").strip()
+            if not run_id:
+                return {"error": "run_id is required"}
+            with self._macro_runs_lock:
+                run = self._macro_runs_by_id.get(run_id)
+            if not run:
+                return {"error": "Run not found"}
+            return {"run": run}
+        if action == "get_latest_macro_run" and data:
+            macro_id = str(data.get("macro_id") or "").strip()
+            if not macro_id:
+                return {"error": "macro_id is required"}
+            with self._macro_runs_lock:
+                ids = self._macro_run_ids_by_macro.get(macro_id) or []
+                latest_id = ids[-1] if ids else ""
+                run = self._macro_runs_by_id.get(latest_id) if latest_id else None
+            if not run:
+                return {"error": "No runs yet"}
+            return {"run": run}
         if action == "import_macros" and data:
             macros = data.get("macros")
             self.after(0, lambda: self._import_macros(macros))
@@ -533,13 +576,8 @@ class App(tk.Tk):
         self.web_logs.append(f"[Macros] Imported {count} macro(s).\n")
 
     def _web_send_command(self, cmd):
-        if not self.server_process or self.server_process.poll() is not None:
-            return
         try:
-            self.server_process.stdin.write(cmd + "\n")
-            self.server_process.stdin.flush()
-            # Log the sent command
-            self.web_logs.append(f"> {cmd}\n")
+            self.core.send_command(cmd)
             self._append_console(f"> {cmd}\n")
         except Exception:
             pass
@@ -549,6 +587,34 @@ class App(tk.Tk):
             self.macro_store.increment_times_ran(macro_id)
         for cmd in commands:
             self.after(0, lambda c=cmd: self._web_send_command(c))
+
+    def _queue_macro_run(self, commands, macro_id=None, macro_title: str = "") -> str:
+        run_id = str(uuid4())
+        request = {
+            "run_id": run_id,
+            "macro_id": str(macro_id or "").strip() or None,
+            "macro_title": str(macro_title or "").strip(),
+            "commands": [str(c).strip() for c in (commands or []) if str(c).strip()],
+            "requested_at": time.time(),
+        }
+        self._macro_run_requests.put(request)
+        with self._macro_runs_lock:
+            self._macro_runs_by_id[run_id] = {
+                "id": run_id,
+                "macro_id": request["macro_id"],
+                "macro_title": request["macro_title"],
+                "requested_at": request["requested_at"],
+                "started_at": None,
+                "finished_at": None,
+                "success": None,
+                "steps": [],
+            }
+            if request["macro_id"]:
+                ids = self._macro_run_ids_by_macro.setdefault(request["macro_id"], [])
+                ids.append(run_id)
+                if len(ids) > 50:
+                    del ids[:-50]
+        return run_id
 
     def _macro_list_payload(self):
         return {"macros": self.macro_store.list(), "presets": PRESET_MACROS}
@@ -577,9 +643,12 @@ class App(tk.Tk):
             return {"error": "At least one command is required"}
         icon = str(payload.get("icon") or "bi-gear-fill").strip()
         trigger = str(payload.get("trigger") or "manual").strip().lower()
-        if trigger not in {"manual", "interval", "player_join", "player_leave", "player_death"}:
+        if trigger not in VALID_TRIGGERS:
             trigger = "manual"
         trigger = TRIGGER_CANONICAL.get(trigger, trigger)
+        chat_keyword = str(payload.get("chat_keyword") or "").strip()
+        if trigger != "chat_keyword":
+            chat_keyword = ""
         interval_seconds = 0
         try:
             interval_seconds = int(payload.get("interval_seconds", 0) or 0)
@@ -596,6 +665,7 @@ class App(tk.Tk):
                 commands=commands,
                 interval_seconds=interval_seconds,
                 trigger=trigger,
+                chat_keyword=chat_keyword,
             )
             if not updated:
                 return {"error": "Macro not found"}
@@ -606,6 +676,7 @@ class App(tk.Tk):
             commands=commands,
             interval_seconds=interval_seconds,
             trigger=trigger,
+            chat_keyword=chat_keyword,
         )
         return macro
 
@@ -1435,40 +1506,24 @@ class App(tk.Tk):
         if not os.path.isdir(server_dir):
             messagebox.showwarning(APP_NAME, "Server folder does not exist.")
             return
-        backend_pref = (self.settings.get("server_backend", "auto") or "auto").lower()
-        launch_cmd, backend = server_launch_command(server_dir, preferred_backend=backend_pref)
-        if not launch_cmd:
-            messagebox.showwarning(APP_NAME, "Server executable not found in server folder.")
-            return
         try:
-            self.server_process = subprocess.Popen(
-                launch_cmd,
-                cwd=server_dir,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
+            self.core.start_server()
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"Failed to start server: {exc}")
             return
-        self.server_backend = backend
+        self.server_process = self.core.server_process
+        self.server_backend = self.core.server_backend
         self._server_dir_running = server_dir
-        self._start_log_tailer(server_dir, backend)
 
         self.btn_server_start.config(state="disabled")
         self.btn_server_stop.config(state="normal")
         self.btn_server_refresh.config(state="normal")
         self.status_running_var.set("Running")
-        self.server_start_time = time.time()
+        self.server_start_time = self.core.server_start_time or time.time()
         self.server_start_monotonic = time.monotonic()
-        self.web_logs.clear()
-        self.web_logs.append("Server started.\n")
         self._append_console("Server started.\n")
+        self._trigger_macros_for_event("server_started", None)
         self._set_console_enabled(True)
-
-        threading.Thread(target=self._server_reader, daemon=True).start()
         self._update_uptime()
 
     def _server_reader(self):
@@ -1479,6 +1534,9 @@ class App(tk.Tk):
                     name = self._parse_player_event(line)
                     if name:
                         self.server_queue.put(name)
+                    chat = self._parse_chat_message(line)
+                    if chat:
+                        self.server_queue.put(("chat_message", chat))
         except Exception as exc:
             self.server_queue.put(f"[Console error] {exc}\n")
         finally:
@@ -1494,6 +1552,7 @@ class App(tk.Tk):
                     if event == "player_connected":
                         self.live_players.add(value)
                         self._refresh_live_players()
+                        self._trigger_macros_for_event("player_connected", value)
                     elif event == "player_join":
                         self.live_players.add(value)
                         self._refresh_live_players()
@@ -1507,11 +1566,16 @@ class App(tk.Tk):
                     elif event == "server_stopped":
                         self.live_players.clear()
                         self._refresh_live_players()
+                        self._trigger_macros_for_event("server_stopped", None)
+                    elif event == "chat_message":
+                        if isinstance(value, dict):
+                            self._trigger_macros_for_chat_keyword(value.get("player"), value.get("message"))
                     continue
                 self.web_logs.append(item)
                 self._append_console(item)
         except queue.Empty:
             pass
+        self._poll_macro_runs()
         if self.server_process and self.server_process.poll() is not None:
             self._stop_log_tailer()
             self.btn_server_start.config(state="normal")
@@ -1527,12 +1591,110 @@ class App(tk.Tk):
             self._set_console_enabled(False)
         self.after(200, self._poll_server_output)
 
-    def _trigger_macros_for_event(self, trigger_event, player_name):
-        if not player_name or not trigger_event:
+    def _poll_macro_runs(self):
+        if self._active_macro_run is None:
+            try:
+                req = self._macro_run_requests.get_nowait()
+            except queue.Empty:
+                return
+            if not req or not req.get("commands"):
+                return
+            run_id = req["run_id"]
+            self._active_macro_run = {
+                "run_id": run_id,
+                "macro_id": req.get("macro_id"),
+                "macro_title": req.get("macro_title"),
+                "commands": list(req.get("commands") or []),
+                "idx": 0,
+            }
+            with self._macro_runs_lock:
+                run = self._macro_runs_by_id.get(run_id)
+                if run:
+                    run["started_at"] = time.time()
+            self.after(10, self._macro_run_next_step)
+
+    def _macro_run_next_step(self):
+        state = self._active_macro_run
+        if not state:
             return
-        name = str(player_name or "").strip()
-        if not name:
+        commands = state.get("commands") or []
+        idx = int(state.get("idx") or 0)
+        run_id = state.get("run_id")
+        if idx >= len(commands):
+            with self._macro_runs_lock:
+                run = self._macro_runs_by_id.get(run_id)
+                if run and run.get("finished_at") is None:
+                    run["finished_at"] = time.time()
+                    steps = run.get("steps") or []
+                    run["success"] = all(bool(step.get("success")) for step in steps) if steps else True
+            self._active_macro_run = None
+            self.after(10, self._poll_macro_runs)
             return
+
+        cmd = str(commands[idx] or "").strip()
+        if not cmd:
+            state["idx"] = idx + 1
+            self.after(10, self._macro_run_next_step)
+            return
+
+        try:
+            self.core.send_command(cmd)
+        except Exception:
+            pass
+        capture_start_len = len(self.web_logs)
+        try:
+            self._append_console(f"> {cmd}\n")
+        except Exception:
+            pass
+        # Capture output shortly after sending the command (best-effort; logs are async).
+        state["pending"] = {"cmd": cmd, "capture_start_len": capture_start_len, "sent_at": time.time()}
+        self.after(900, self._macro_run_capture_step)
+
+    def _macro_run_capture_step(self):
+        state = self._active_macro_run
+        if not state or not state.get("pending"):
+            return
+        pending = state.pop("pending")
+        cmd = pending.get("cmd") or ""
+        capture_start_len = int(pending.get("capture_start_len") or 0)
+        sent_at = float(pending.get("sent_at") or time.time())
+        run_id = state.get("run_id")
+
+        logs_now = list(self.web_logs)
+        output_lines = []
+        truncated = False
+        if capture_start_len <= len(logs_now):
+            output_lines = logs_now[capture_start_len:]
+        else:
+            # Deque may have rotated; fallback to last few lines.
+            truncated = True
+            output_lines = logs_now[-30:]
+
+        joined = "".join(output_lines).lower()
+        success = True
+        if "unknown command" in joined or "error" in joined or "exception" in joined:
+            success = False
+
+        step = {
+            "command": cmd,
+            "sent_at": sent_at,
+            "captured_at": time.time(),
+            "success": success,
+            "truncated": truncated,
+            "output": output_lines,
+        }
+        with self._macro_runs_lock:
+            run = self._macro_runs_by_id.get(run_id)
+            if run:
+                run.setdefault("steps", []).append(step)
+
+        state["idx"] = int(state.get("idx") or 0) + 1
+        self.after(10, self._macro_run_next_step)
+
+    def _trigger_macros_for_event(self, trigger_event, player_name=None):
+        if not trigger_event:
+            return
+        name = str(player_name or "").strip() if player_name else ""
         try:
             macros = self.macro_store.list()
         except Exception:
@@ -1550,6 +1712,38 @@ class App(tk.Tk):
             for cmd in commands:
                 rendered.append(str(cmd or "").replace("{player}", name))
             self._run_macro_commands(rendered)
+
+    def _trigger_macros_for_chat_keyword(self, player_name=None, message: str = ""):
+        msg = str(message or "")
+        if not msg:
+            return
+        name = str(player_name or "").strip() if player_name else ""
+        try:
+            macros = self.macro_store.list()
+        except Exception:
+            return
+        for macro in macros:
+            stored_trigger = TRIGGER_CANONICAL.get(
+                str(macro.get("trigger") or "").strip().lower(),
+                (macro.get("trigger") or "manual").strip().lower(),
+            )
+            if stored_trigger != "chat_keyword":
+                continue
+            keyword = str(macro.get("chat_keyword") or "").strip()
+            if not keyword:
+                continue
+            if keyword.lower() not in msg.lower():
+                continue
+            commands = macro.get("commands") or []
+            if not commands:
+                continue
+            rendered = []
+            for cmd in commands:
+                cmd_text = str(cmd or "")
+                cmd_text = cmd_text.replace("{player}", name)
+                cmd_text = cmd_text.replace("{message}", msg)
+                rendered.append(cmd_text)
+            self._run_macro_commands(rendered, macro_id=macro.get("id"))
 
     def _trigger_player_join_macros(self, player_name: str):
         name = str(player_name or "").strip()
@@ -1618,8 +1812,7 @@ class App(tk.Tk):
         if not self.server_process or self.server_process.poll() is not None:
             return
         try:
-            self.server_process.stdin.write("stop\n")
-            self.server_process.stdin.flush()
+            self.core.stop_server()
         except Exception:
             pass
         self.after(5000, self._force_stop_server)
@@ -1628,7 +1821,7 @@ class App(tk.Tk):
         if not self.server_process or self.server_process.poll() is not None:
             return
         try:
-            self.server_process.terminate()
+            self.core.stop_server()
         except Exception:
             pass
         self._stop_log_tailer()
@@ -1647,32 +1840,19 @@ class App(tk.Tk):
         self._set_console_enabled(False)
 
     def _on_close(self):
-        self.macro_scheduler.stop()
+        try:
+            self.core.close()
+        except Exception:
+            pass
         self._stop_web_manager()
         self._shutdown_server_process()
         self.destroy()
 
     def _shutdown_server_process(self):
-        proc = self.server_process
-        if not proc or proc.poll() is not None:
-            return
         try:
-            if proc.stdin:
-                proc.stdin.write("stop\n")
-                proc.stdin.flush()
+            self.core.stop_server()
         except Exception:
             pass
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            try:
-                proc.terminate()
-                proc.wait(timeout=2)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
         self.server_backend = None
         self._server_dir_running = None
         self._perf_prev = None
@@ -1933,6 +2113,26 @@ class App(tk.Tk):
         death = self._match_player_death(line)
         if death:
             return ("player_death", death)
+        return None
+
+    def _parse_chat_message(self, line: str) -> Optional[dict]:
+        """Best-effort chat parsing for BDS/Endstone logs."""
+        text = str(line or "").strip("\n")
+        if not text:
+            return None
+        patterns = [
+            r"\]:\s*<(?P<name>[^>]+)>\s*(?P<message>.+)$",
+            r"\]:\s*(?P<name>[^:]{1,32})\s*:\s*(?P<message>.+)$",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if not match:
+                continue
+            name = self._clean_player_name(match.group("name"))
+            message = (match.group("message") or "").strip()
+            if not name or not message:
+                continue
+            return {"player": name, "message": message}
         return None
 
     def _clean_player_name(self, raw_name: str) -> str:

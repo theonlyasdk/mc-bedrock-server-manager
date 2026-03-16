@@ -8,9 +8,25 @@ from typing import Callable, Dict, Iterable, List, Optional
 
 TRIGGER_CANONICAL = {
     "player_login": "player_join",
+    "player_connected": "player_connected",
     "player_join": "player_join",
     "player_leave": "player_leave",
     "player_death": "player_death",
+    "server_started": "server_started",
+    "server_stopped": "server_stopped",
+    "chat_keyword": "chat_keyword",
+}
+
+VALID_TRIGGERS = {
+    "manual",
+    "interval",
+    "player_connected",
+    "player_join",
+    "player_leave",
+    "player_death",
+    "server_started",
+    "server_stopped",
+    "chat_keyword",
 }
 
 class MacroStore:
@@ -50,15 +66,18 @@ class MacroStore:
         commands: Iterable[str],
         interval_seconds: int = 0,
         trigger: str = "manual",
+        chat_keyword: str = "",
     ) -> dict:
         cleaned_commands = [cmd for cmd in (str(c).strip() for c in commands) if cmd]
         trigger = str(trigger or "manual").strip().lower()
-        if trigger not in {"manual", "interval", "player_join", "player_leave", "player_death"}:
+        if trigger not in VALID_TRIGGERS:
             trigger = "manual"
         if trigger != "interval":
             interval_seconds = 0
         trigger = TRIGGER_CANONICAL.get(trigger, trigger)
-        trigger = TRIGGER_CANONICAL.get(trigger, trigger)
+        keyword = str(chat_keyword or "").strip()
+        if trigger != "chat_keyword":
+            keyword = ""
         macro = {
             "id": str(uuid.uuid4()),
             "title": title.strip(),
@@ -67,6 +86,7 @@ class MacroStore:
             "interval_seconds": max(0, int(interval_seconds)) if interval_seconds is not None else 0,
             "times_ran": 0,
             "trigger": trigger,
+            "chat_keyword": keyword,
             "created_at": time.time(),
         }
         with self._lock:
@@ -82,14 +102,18 @@ class MacroStore:
         commands: Iterable[str],
         interval_seconds: int = 0,
         trigger: str = "manual",
+        chat_keyword: str = "",
     ) -> Optional[dict]:
         cleaned_commands = [cmd for cmd in (str(c).strip() for c in commands) if cmd]
         trigger = str(trigger or "manual").strip().lower()
-        if trigger not in {"manual", "interval", "player_join", "player_leave", "player_death"}:
+        if trigger not in VALID_TRIGGERS:
             trigger = "manual"
         if trigger != "interval":
             interval_seconds = 0
         trigger = TRIGGER_CANONICAL.get(trigger, trigger)
+        keyword = str(chat_keyword or "").strip()
+        if trigger != "chat_keyword":
+            keyword = ""
         with self._lock:
             for idx, existing in enumerate(self._macros):
                 if existing.get("id") == macro_id:
@@ -100,6 +124,7 @@ class MacroStore:
                         "commands": cleaned_commands,
                         "interval_seconds": max(0, int(interval_seconds)) if interval_seconds is not None else 0,
                         "trigger": trigger,
+                        "chat_keyword": keyword,
                         "times_ran": existing.get("times_ran", 0),
                         "created_at": existing.get("created_at", time.time()),
                     }
@@ -148,11 +173,14 @@ class MacroStore:
             except Exception:
                 interval_seconds = 0
             trigger = str(raw.get("trigger") or "manual").strip().lower()
-            if trigger not in {"manual", "interval", "player_join", "player_leave", "player_death"}:
+            if trigger not in VALID_TRIGGERS:
                 trigger = "manual"
             if trigger != "interval":
                 interval_seconds = 0
             trigger = TRIGGER_CANONICAL.get(trigger, trigger)
+            keyword = str(raw.get("chat_keyword") or "").strip()
+            if trigger != "chat_keyword":
+                keyword = ""
             existing_times = raw.get("times_ran") or 0
             try:
                 existing_times = max(0, int(existing_times))
@@ -172,6 +200,7 @@ class MacroStore:
                     "interval_seconds": interval_seconds,
                     "times_ran": existing_times,
                     "trigger": trigger,
+                    "chat_keyword": keyword,
                     "created_at": created_at,
                 }
             )

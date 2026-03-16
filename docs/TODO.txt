@@ -29,4 +29,13 @@
 
 6. Allow renaming world name
 
-add a kick option to each player in players list, which sends a kick command with the players name. 
+add a kick option to each player in players list, 
+
+
+Interactive Player Actions: In the "Active Players" list, add buttons
+     for common tasks:
+       * Kick/Ban: Quickly remove players. which sends a kick command with the players name. 
+       * Promote to OP: Change permissions on the fly.
+       * Teleport/Give: Shortcuts for common commands targeted at a
+         specific player. when teleport button is clicked, show a dialog showing a list of candidates, as radio buttons. at the very top, allow the user to specify a custom selector as well.
+         when ok clicked, will issue the tp command to the server
