@@ -16,9 +16,19 @@ let refreshOriginalHtml = null;
 let backupsSortKey = "name";
 let backupsSortDir = "asc"; // asc | desc
 let autoRefreshTimer = null;
+let realtimeSocket = null;
+let realtimeConnected = false;
+let realtimeReconnectTimer = null;
+let realtimeRetryMs = 1000;
 let lastChatLogLine = null;
 let mentionPlayers = [];
 let mentionTeams = [];
+let liveLogs = [];
+const recentInboundChatKeys = new Map(); // key -> timestamp ms
+let useChatLoggerPlugin = false;
+
+const LOG_BUFFER_MAX = 400;
+const CHAT_DEDUPE_WINDOW_MS = 15000;
 
 const STORAGE_KEYS = {
   sidebarCollapsed: "mcbsm.sidebarCollapsed",
@@ -194,6 +204,7 @@ const refreshBtn = document.getElementById("refreshBtn");
 const reconnectBtn = document.getElementById("reconnectBtn");
 const serverBackendSelectSettings = document.getElementById("serverBackendSelectSettings");
 const autostartServerCheckboxSettings = document.getElementById("autostartServerCheckboxSettings");
+const chatLoggerPluginCheckboxSettings = document.getElementById("chatLoggerPluginCheckboxSettings");
 const confirmNewBackupBtn = document.getElementById("confirmNewBackupBtn");
 const sendCommandBtn = document.getElementById("sendCommandBtn");
 const commandInput = document.getElementById("commandInput");
@@ -382,10 +393,14 @@ function showSection(section) {
 
 function handleFetchError(err) {
   console.error("API Error:", err);
-  if (!isDisconnected) {
-    isDisconnected = true;
-    disconnectedModal.show();
-  }
+  setDisconnectedState(true);
+}
+
+function setDisconnectedState(disconnected) {
+  if (isDisconnected === disconnected) return;
+  isDisconnected = disconnected;
+  if (isDisconnected) disconnectedModal.show();
+  else disconnectedModal.hide();
 }
 
 async function sendCommand(action, data = null, options = {}) {
@@ -505,6 +520,109 @@ function updateToggleButton(disabled, text) {
   }
 }
 
+function applyStatusPayload(data) {
+  const payload = data && typeof data === "object" ? data : {};
+  if (payload.success === false) {
+    showError(payload.error || "Status check failed");
+    return;
+  }
+  if (Array.isArray(payload.logs)) {
+    liveLogs = payload.logs.slice(-LOG_BUFFER_MAX);
+  }
+  updateUI({ ...payload, logs: liveLogs });
+
+  if (currentSection === "macros") {
+    const now = Date.now();
+    if (!macrosRefreshInFlight && now - lastMacrosRefreshAt >= 5000) {
+      macrosRefreshInFlight = true;
+      lastMacrosRefreshAt = now;
+      fetchQuickMacros().finally(() => {
+        macrosRefreshInFlight = false;
+      });
+    }
+  }
+
+  if (!initialStatusLoadDone) {
+    initialStatusLoadDone = true;
+    if (pageLoadingOverlay) {
+      pageLoadingOverlay.classList.add("hidden");
+      setTimeout(() => pageLoadingOverlay.remove(), 250);
+    }
+  }
+  setDisconnectedState(false);
+}
+
+function appendLogs(lines) {
+  if (!Array.isArray(lines) || lines.length === 0) return;
+  const entries = lines.map((line) => (line == null ? "" : String(line))).filter((line) => line !== "");
+  if (entries.length === 0) return;
+  liveLogs = liveLogs.concat(entries);
+  if (liveLogs.length > LOG_BUFFER_MAX) {
+    liveLogs = liveLogs.slice(-LOG_BUFFER_MAX);
+  }
+  renderLogs(liveLogs);
+}
+
+function renderLogs(logs) {
+  if (isServerRunning) {
+    [logsContainer, connectionDetailsContainer].forEach((container) => {
+      if (container && container.classList.contains("d-none")) {
+        container.classList.remove("d-none");
+        container.classList.remove("animate-out");
+        container.classList.add("animate-in");
+      }
+    });
+    ingestChatFromLogs(logs);
+    const logsText = logs.join("");
+    if (logsText !== lastLogs) {
+      const isAtBottom = serverLogs.scrollHeight - serverLogs.scrollTop <= serverLogs.clientHeight + 100;
+      serverLogs.innerText = logsText;
+      if (isAtBottom) {
+        requestAnimationFrame(() => {
+          serverLogs.scrollTop = serverLogs.scrollHeight;
+        });
+      }
+      lastLogs = logsText;
+    }
+  } else {
+    [logsContainer, connectionDetailsContainer].forEach((container) => {
+      if (container && !container.classList.contains("d-none") && !container.classList.contains("animate-out")) {
+        container.classList.remove("animate-in");
+        container.classList.add("animate-out");
+        setTimeout(() => {
+          if (!isServerRunning) {
+            container.classList.add("d-none");
+            if (container === logsContainer) serverLogs.innerText = "";
+          }
+        }, 400);
+      }
+    });
+    lastLogs = "";
+    lastChatLogLine = null;
+  }
+
+  if (chatPanel) {
+    if (isServerRunning) {
+      chatPanel.classList.remove("d-none");
+      chatPanel.classList.remove("animate-out");
+      chatPanel.classList.add("animate-in");
+    } else {
+      chatPanel.classList.add("d-none");
+      chatPanel.classList.remove("animate-in");
+    }
+  }
+
+  if (consoleOfflineMessage) {
+    consoleOfflineMessage.classList.toggle("d-none", isServerRunning);
+  }
+  if (consoleOnlineLayout) {
+    consoleOnlineLayout.classList.toggle("d-none", !isServerRunning);
+  }
+  if (chatInput) chatInput.disabled = !isServerRunning;
+  if (chatSendBtn) chatSendBtn.disabled = !isServerRunning;
+  if (chatRecipientBtn) chatRecipientBtn.disabled = !isServerRunning;
+}
+
 async function refreshStatus() {
   if (refreshInFlight) {
     refreshQueued = true;
@@ -528,33 +646,10 @@ async function refreshStatus() {
       throw new Error(data.error || "Status check failed");
     }
 
-    if (isDisconnected) {
-      isDisconnected = false;
-      disconnectedModal.hide();
-    }
-
-    updateUI(data);
-
-    if (currentSection === "macros") {
-      const now = Date.now();
-      if (!macrosRefreshInFlight && now - lastMacrosRefreshAt >= 5000) {
-        macrosRefreshInFlight = true;
-        lastMacrosRefreshAt = now;
-        fetchQuickMacros().finally(() => {
-          macrosRefreshInFlight = false;
-        });
-      }
-    }
+    applyStatusPayload(data);
   } catch (err) {
     handleFetchError(err);
   } finally {
-    if (!initialStatusLoadDone) {
-      initialStatusLoadDone = true;
-      if (pageLoadingOverlay) {
-        pageLoadingOverlay.classList.add("hidden");
-        setTimeout(() => pageLoadingOverlay.remove(), 250);
-      }
-    }
     refreshInFlight = false;
     setTimeout(() => {
       refreshBtn.disabled = false;
@@ -588,6 +683,7 @@ function updateUptimeDisplay() {
 function updateUI(data) {
   const bedrock = data.bedrock || {};
   const web = data.web_manager || {};
+  const chat = data.chat || {};
   const players = data.players || [];
   mentionPlayers = Array.isArray(players) ? players.map((p) => String(p || "").trim()).filter(Boolean) : [];
   _allActivePlayers = mentionPlayers;
@@ -625,6 +721,13 @@ function updateUI(data) {
   if (autostartServerCheckboxSettings) {
     autostartServerCheckboxSettings.checked = Boolean(bedrock.autostart_server);
     autostartServerCheckboxSettings.disabled = isRequestInFlight;
+  }
+  if (chatLoggerPluginCheckboxSettings) {
+    useChatLoggerPlugin = Boolean(chat.use_chat_logger_plugin);
+    chatLoggerPluginCheckboxSettings.checked = useChatLoggerPlugin;
+    chatLoggerPluginCheckboxSettings.disabled = isRequestInFlight;
+  } else {
+    useChatLoggerPlugin = Boolean(chat.use_chat_logger_plugin);
   }
 
   if (!isRequestInFlight) {
@@ -753,63 +856,7 @@ function updateUI(data) {
       network.local_ip && network.port ? `${network.local_ip}:${network.port}` : "-";
   }
 
-  if (isServerRunning) {
-    [logsContainer, connectionDetailsContainer].forEach((container) => {
-      if (container && container.classList.contains("d-none")) {
-        container.classList.remove("d-none");
-        container.classList.remove("animate-out");
-        container.classList.add("animate-in");
-      }
-    });
-    ingestChatFromLogs(logs);
-    const logsText = logs.join("");
-    if (logsText !== lastLogs) {
-      const isAtBottom = serverLogs.scrollHeight - serverLogs.scrollTop <= serverLogs.clientHeight + 100;
-      serverLogs.innerText = logsText;
-      if (isAtBottom) {
-        requestAnimationFrame(() => {
-          serverLogs.scrollTop = serverLogs.scrollHeight;
-        });
-      }
-      lastLogs = logsText;
-    }
-  } else {
-    [logsContainer, connectionDetailsContainer].forEach((container) => {
-      if (container && !container.classList.contains("d-none") && !container.classList.contains("animate-out")) {
-        container.classList.remove("animate-in");
-        container.classList.add("animate-out");
-        setTimeout(() => {
-          if (!isServerRunning) {
-            container.classList.add("d-none");
-            if (container === logsContainer) serverLogs.innerText = "";
-          }
-        }, 400);
-      }
-    });
-    lastLogs = "";
-    lastChatLogLine = null;
-  }
-
-  if (chatPanel) {
-    if (isServerRunning) {
-      chatPanel.classList.remove("d-none");
-      chatPanel.classList.remove("animate-out");
-      chatPanel.classList.add("animate-in");
-    } else {
-      chatPanel.classList.add("d-none");
-      chatPanel.classList.remove("animate-in");
-    }
-  }
-
-  if (consoleOfflineMessage) {
-    consoleOfflineMessage.classList.toggle("d-none", isServerRunning);
-  }
-  if (consoleOnlineLayout) {
-    consoleOnlineLayout.classList.toggle("d-none", !isServerRunning);
-  }
-  if (chatInput) chatInput.disabled = !isServerRunning;
-  if (chatSendBtn) chatSendBtn.disabled = !isServerRunning;
-  if (chatRecipientBtn) chatRecipientBtn.disabled = !isServerRunning;
+  renderLogs(logs);
 
   // Player List
   const playerList = document.getElementById("playerList");
@@ -1572,6 +1619,14 @@ function initAutostartServerSettingsToggle() {
   });
 }
 
+function initChatLoggerPluginSettingsToggle() {
+  if (!chatLoggerPluginCheckboxSettings) return;
+  chatLoggerPluginCheckboxSettings.addEventListener("change", () => {
+    const enabled = Boolean(chatLoggerPluginCheckboxSettings.checked);
+    sendCommand("set_use_chat_logger_plugin", { enabled });
+  });
+}
+
 function initDropdownCloseAnimations() {
   if (typeof bootstrap === "undefined" || !bootstrap.Dropdown) return;
   document.addEventListener("hide.bs.dropdown", (e) => {
@@ -1862,7 +1917,10 @@ toggleServerBtn.onclick = () => {
   sendCommand(isServerRunning ? "stop_server" : "start_server");
 };
 
-reconnectBtn.onclick = refreshStatus;
+reconnectBtn.onclick = () => {
+  connectRealtime();
+  refreshStatus();
+};
 refreshBtn.onclick = refreshStatus;
 sidebarToggle.onclick = toggleSidebar;
 
@@ -1870,6 +1928,7 @@ sidebarToggle.onclick = toggleSidebar;
   initSettingsUI();
   initServerBackendSettingsSelect();
   initAutostartServerSettingsToggle();
+  initChatLoggerPluginSettingsToggle();
   initDropdownCloseAnimations();
   initCommandMentions();
   initSpawnMobMentions();
@@ -1885,7 +1944,7 @@ sidebarToggle.onclick = toggleSidebar;
   initMotdToolbox();
   initPlayerActions();
   initActivePlayerActionButtons();
-  startAutoRefresh();
+  initRealtime();
   refreshStatus();
 
 exportMacrosBtn?.addEventListener("click", exportMacros);
@@ -1964,13 +2023,102 @@ function initSettingsUI() {
 }
 
 function startAutoRefresh() {
-  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  if (realtimeConnected) return;
+  stopAutoRefresh();
   let sec = 5;
   try {
     const stored = Number(localStorage.getItem(STORAGE_KEYS.updateIntervalSec));
     if (Number.isFinite(stored) && stored >= 2 && stored <= 30) sec = stored;
   } catch (_e) {}
   autoRefreshTimer = setInterval(refreshStatus, sec * 1000);
+}
+
+function stopAutoRefresh() {
+  if (!autoRefreshTimer) return;
+  clearInterval(autoRefreshTimer);
+  autoRefreshTimer = null;
+}
+
+function initRealtime() {
+  if (!("WebSocket" in window)) {
+    startAutoRefresh();
+    return;
+  }
+  connectRealtime();
+}
+
+function connectRealtime() {
+  if (realtimeReconnectTimer) {
+    clearTimeout(realtimeReconnectTimer);
+    realtimeReconnectTimer = null;
+  }
+  if (realtimeSocket) {
+    try {
+      realtimeSocket.close();
+    } catch (_e) {}
+  }
+
+  const protocol = location.protocol === "https:" ? "wss" : "ws";
+  const wsUrl = `${protocol}://${location.host}/ws`;
+  let socket;
+  try {
+    socket = new WebSocket(wsUrl);
+  } catch (_e) {
+    scheduleRealtimeReconnect();
+    startAutoRefresh();
+    return;
+  }
+
+  realtimeSocket = socket;
+
+  socket.onopen = () => {
+    realtimeConnected = true;
+    realtimeRetryMs = 1000;
+    stopAutoRefresh();
+    setDisconnectedState(false);
+    try {
+      socket.send(JSON.stringify({ type: "status_request" }));
+    } catch (_e) {}
+  };
+
+  socket.onmessage = (event) => {
+    let msg = null;
+    try {
+      msg = JSON.parse(event.data);
+    } catch (_e) {
+      return;
+    }
+    if (msg.type === "status") {
+      applyStatusPayload(msg.payload || {});
+    } else if (msg.type === "logs") {
+      appendLogs(msg.lines || []);
+    } else if (msg.type === "error") {
+      showError(msg.message || "Realtime update failed.");
+    }
+  };
+
+  socket.onclose = () => {
+    realtimeConnected = false;
+    setDisconnectedState(true);
+    scheduleRealtimeReconnect();
+    startAutoRefresh();
+  };
+
+  socket.onerror = () => {
+    try {
+      socket.close();
+    } catch (_e) {}
+  };
+}
+
+function scheduleRealtimeReconnect() {
+  if (realtimeReconnectTimer) return;
+  const delay = Math.min(realtimeRetryMs, 30000);
+  realtimeReconnectTimer = setTimeout(() => {
+    realtimeReconnectTimer = null;
+    realtimeRetryMs = Math.min(realtimeRetryMs * 2, 30000);
+    connectRealtime();
+  }, delay);
 }
 
 function initConsoleSplitView() {
@@ -2600,13 +2748,8 @@ function ingestChatFromLogs(logs) {
     const parsed = parseChatLogLine(logs[i]);
     if (!parsed) continue;
 
-    // Check if this inbound message already exists in chatMessages (prevent reload duplicates)
-    const alreadyPresent = chatMessages.some(m => 
-      m.direction === "inbound" && 
-      m.sender === parsed.sender && 
-      m.text === parsed.text
-    );
-    if (alreadyPresent) continue;
+    const dedupeKey = buildChatDedupeKey(parsed.sender, parsed.text);
+    if (isRecentlySeenInboundChat(dedupeKey)) continue;
 
     pushChatMessage({
       direction: "inbound",
@@ -2618,19 +2761,61 @@ function ingestChatFromLogs(logs) {
   lastChatLogLine = logs[logs.length - 1] || lastChatLogLine;
 }
 
+function normalizeChatField(value) {
+  const s = String(value == null ? "" : value)
+    .replace(/\u001b\[[0-9;]*m/g, "") // ANSI
+    .replace(/§[0-9A-FK-OR]/gi, "") // Minecraft color/format codes
+    .trim();
+  return s.replace(/\s+/g, " ");
+}
+
+function buildChatDedupeKey(sender, text) {
+  const s = normalizeChatField(sender).toLowerCase();
+  const t = normalizeChatField(text);
+  return `${s}\n${t}`;
+}
+
+function isRecentlySeenInboundChat(key) {
+  const now = Date.now();
+  for (const [k, ts] of recentInboundChatKeys) {
+    if (now - ts > CHAT_DEDUPE_WINDOW_MS) recentInboundChatKeys.delete(k);
+  }
+  const prev = recentInboundChatKeys.get(key);
+  if (prev && now - prev <= CHAT_DEDUPE_WINDOW_MS) return true;
+  recentInboundChatKeys.set(key, now);
+  return false;
+}
+
 function parseChatLogLine(line) {
   if (!line) return null;
   const text = String(line);
   const markerIndex = text.indexOf("[CHAT]");
-  if (markerIndex === -1) return null;
-  const payload = text.slice(markerIndex + 6).trim();
-  if (!payload) return null;
-  const sep = payload.indexOf(":");
-  if (sep === -1) return null;
-  const sender = payload.slice(0, sep).trim();
-  const message = payload.slice(sep + 1).trim();
-  if (!sender || !message) return null;
-  return { sender, text: message };
+
+  // Preferred: Endstone chat logger plugin format: "... [CHAT] Username: message"
+  if (markerIndex !== -1) {
+    if (!useChatLoggerPlugin) return null;
+    const payload = text.slice(markerIndex + 6).trim();
+    if (!payload) return null;
+    const sep = payload.indexOf(":");
+    if (sep === -1) return null;
+    const sender = payload.slice(0, sep).trim();
+    const message = payload.slice(sep + 1).trim();
+    if (!sender || !message) return null;
+    return { sender, text: message };
+  }
+
+  // Fallback: common "vanilla-style" format: "<Username> message" (optionally prefixed by timestamps/levels)
+  const lt = text.indexOf("<");
+  const gt = lt >= 0 ? text.indexOf(">", lt + 1) : -1;
+  if (lt >= 0 && gt > lt) {
+    if (useChatLoggerPlugin) return null;
+    const sender = text.slice(lt + 1, gt).trim();
+    const message = text.slice(gt + 1).trim();
+    if (!sender || !message) return null;
+    return { sender, text: message };
+  }
+
+  return null;
 }
 
 function renderChatMessages() {

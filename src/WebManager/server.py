@@ -1,9 +1,17 @@
+import json
 import os
 import threading
 from typing import Callable, Optional
 
 from flask import Flask, jsonify, render_template, request
 from werkzeug.serving import make_server
+
+try:
+    from flask_sock import Sock
+except Exception:
+    Sock = None
+
+from .realtime import RealtimeHub
 
 
 class WebManagerServer:
@@ -26,7 +34,10 @@ class WebManagerServer:
         self.app = Flask(__name__, template_folder=template_folder)
         self.app.config["TEMPLATES_AUTO_RELOAD"] = True
         self.app.jinja_env.auto_reload = True
+        self._sock = Sock(self.app) if Sock else None
+        self._realtime = RealtimeHub()
         self._register_routes()
+        self._register_ws_routes()
 
     def _register_routes(self):
         self.app.add_url_rule("/", endpoint="index", view_func=self._render_index)
@@ -44,6 +55,11 @@ class WebManagerServer:
             methods=["GET", "POST"],
         )
 
+    def _register_ws_routes(self):
+        if not self._sock:
+            return
+        self._sock.route("/ws")(self._ws_handler)
+
     @staticmethod
     def _normalize_macros_payload(payload):
         macros = []
@@ -60,6 +76,14 @@ class WebManagerServer:
     def _render_index(self):
         return render_template("index.html")
 
+    def _build_status_payload(self):
+        if not self.status_provider:
+            return {"success": False, "error": "Provider unavailable"}
+        try:
+            return self.status_provider()
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
     def _status_json(self):
         if not self.status_provider:
             return jsonify({"success": False, "error": "Provider unavailable"}), 503
@@ -67,6 +91,44 @@ class WebManagerServer:
             return jsonify(self.status_provider())
         except Exception as exc:
             return jsonify({"success": False, "error": str(exc)}), 500
+
+    def _ws_handler(self, ws):
+        self._realtime.register(ws)
+        try:
+            self._send_ws_status(ws)
+            while True:
+                message = ws.receive()
+                if message is None:
+                    break
+                self._handle_ws_message(ws, message)
+        finally:
+            self._realtime.unregister(ws)
+
+    def _handle_ws_message(self, ws, message: str) -> None:
+        try:
+            payload = json.loads(message or "{}")
+        except Exception:
+            return
+        msg_type = str(payload.get("type") or "")
+        if msg_type == "status_request":
+            self._send_ws_status(ws)
+        elif msg_type == "ping":
+            self._realtime.send(ws, {"type": "pong"})
+
+    def _send_ws_status(self, ws) -> None:
+        payload = self._build_status_payload()
+        self._realtime.send(ws, {"type": "status", "payload": payload})
+
+    def push_status(self, payload: Optional[dict] = None) -> None:
+        if not self._sock:
+            return
+        snapshot = payload if payload is not None else self._build_status_payload()
+        self._realtime.broadcast({"type": "status", "payload": snapshot})
+
+    def push_logs(self, lines) -> None:
+        if not self._sock:
+            return
+        self._realtime.broadcast_logs(lines)
 
     def _macros_handler(self):
         if request.method == "GET":

@@ -10,8 +10,9 @@ from typing import Callable, Deque, Dict, List, Optional, Tuple
 from macros import MacroScheduler, MacroStore
 from properties_file import PropertiesFile
 from server_validation import server_launch_command
-from settings_store import load_settings, save_settings
+from settings_store import load_settings, macros_path, save_settings
 from WebManager import WebManagerServer
+from logger import debug
 
 
 TRIGGER_CANONICAL = {
@@ -38,7 +39,7 @@ VALID_TRIGGERS = {
     "chat_keyword",
 }
 
-DEFAULT_MACROS_FILE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "macros.json"))
+DEFAULT_MACROS_FILE_PATH = os.path.abspath(macros_path())
 
 
 class ManagerCore:
@@ -55,6 +56,7 @@ class ManagerCore:
         settings: Optional[dict] = None,
         macros_path: Optional[str] = None,
         log_sink: Optional[Callable[[str], None]] = None,
+        web_manager: Optional[WebManagerServer] = None,
     ):
         self.settings = settings if isinstance(settings, dict) else load_settings()
         save_settings(self.settings)
@@ -78,7 +80,7 @@ class ManagerCore:
         self.macro_scheduler = MacroScheduler(self.macro_store, self._run_macro_commands)
         self.macro_scheduler.start()
 
-        self.web_manager = WebManagerServer(
+        self.web_manager = web_manager or WebManagerServer(
             status_provider=self.status_payload,
             command_handler=self.web_command_handler,
             macros_provider=self.macro_payload,
@@ -88,6 +90,7 @@ class ManagerCore:
     # ---- lifecycle ----
 
     def close(self) -> None:
+        debug("ManagerCore.close()")
         self.stop_server()
         self.stop_web_manager()
         self.macro_scheduler.stop()
@@ -97,22 +100,27 @@ class ManagerCore:
     def start_web_manager(self, host: Optional[str] = None, port: Optional[int] = None) -> None:
         if self.web_manager.is_running():
             return
+        debug("Starting web manager (core)")
         host = host or (self.settings.get("web_manager_host") or "127.0.0.1")
         port = int(port or self.settings.get("web_manager_port") or 5050)
         self.web_manager.start(host, port)
         self.settings["web_manager_host"] = host
         self.settings["web_manager_port"] = port
         save_settings(self.settings)
+        debug("Web manager started (core) at {}", self.web_manager.url())
         self._log(f"[Web] Running at {self.web_manager.url()}\n")
 
     def stop_web_manager(self) -> None:
+        debug("Stopping web manager (core)")
         self.web_manager.stop()
+        debug("Web manager stopped (core)")
 
     # ---- server ----
 
     def start_server(self) -> None:
         if self.server_process and self.server_process.poll() is None:
             return
+        debug("Starting server (core)")
         server_dir = (self.settings.get("server_dir") or "").strip()
         if not server_dir or not os.path.isdir(server_dir):
             raise RuntimeError("Server directory is not set or does not exist.")
@@ -132,11 +140,12 @@ class ManagerCore:
         )
         self.server_backend = backend
         self.server_start_time = time.time()
+        debug("Server started (core) backend={}", backend)
         self.web_logs.clear()
-        self.web_logs.append("Server started.\n")
-        self._log("Server started.\n")
+        self._append_web_log("Server started.\n")
         self._trigger_macros_for_event("server_started", None)
         self._refresh_properties()
+        self.web_manager.push_status()
 
         self._server_reader_thread = threading.Thread(target=self._server_reader, daemon=True)
         self._server_reader_thread.start()
@@ -146,6 +155,7 @@ class ManagerCore:
         proc = self.server_process
         if not proc or proc.poll() is not None:
             return
+        debug("Stopping server (core)")
         try:
             if proc.stdin:
                 proc.stdin.write("stop\n")
@@ -165,6 +175,8 @@ class ManagerCore:
         self.server_start_time = None
         self.live_players.clear()
         self.properties = None
+        self.web_manager.push_status()
+        debug("Server stopped (core)")
 
     def send_command(self, cmd: str) -> None:
         cmd = (cmd or "").strip()
@@ -176,8 +188,7 @@ class ManagerCore:
         try:
             proc.stdin.write(cmd + "\n")
             proc.stdin.flush()
-            self.web_logs.append(f"> {cmd}\n")
-            self._log(f"> {cmd}\n")
+            self._append_web_log(f"> {cmd}\n")
         except Exception:
             pass
 
@@ -185,6 +196,7 @@ class ManagerCore:
 
     def drain_queue(self) -> None:
         """Drain parsed events/log lines and update internal state."""
+        status_changed = False
         try:
             while True:
                 item = self.server_queue.get_nowait()
@@ -194,28 +206,34 @@ class ManagerCore:
                         if value:
                             self.live_players.add(value)
                             self._trigger_macros_for_event("player_connected", value)
+                            status_changed = True
                     elif event == "player_join":
                         if value:
                             self.live_players.add(value)
                             self._trigger_macros_for_event("player_join", value)
+                            status_changed = True
                     elif event == "player_leave":
                         if value:
                             self.live_players.discard(value)
                             self._trigger_macros_for_event("player_leave", value)
+                            status_changed = True
                     elif event == "player_death":
                         if value:
                             self._trigger_macros_for_event("player_death", value)
                     elif event == "server_stopped":
                         self.live_players.clear()
                         self._trigger_macros_for_event("server_stopped", None)
+                        status_changed = True
                     elif event == "chat_message":
                         if isinstance(value, dict):
                             self._trigger_macros_for_chat_keyword(value.get("player"), value.get("message"))
                     continue
-                self.web_logs.append(str(item))
-                self._log(str(item))
+                self._append_web_log(str(item))
         except queue.Empty:
             return
+        finally:
+            if status_changed:
+                self.web_manager.push_status()
 
     # ---- web UI providers/handlers ----
 
@@ -246,6 +264,9 @@ class ManagerCore:
             "properties": props,
             "backups": backups,
             "logs": list(self.web_logs),
+            "chat": {
+                "use_chat_logger_plugin": bool(self.settings.get("use_chat_logger_plugin", False)),
+            },
             "network": {"local_ip": "-", "public_ip": "-", "port": props.get("server-port", "19132")},
             "server_start_time": self.server_start_time if running else None,
             "server_uptime_seconds": (time.time() - self.server_start_time) if (running and self.server_start_time) else 0,
@@ -278,6 +299,11 @@ class ManagerCore:
         if action == "set_autostart_server" and data is not None:
             self.settings["autostart_server"] = bool(data.get("enabled", False))
             save_settings(self.settings)
+            return {"scheduled": True}
+        if action == "set_use_chat_logger_plugin" and data is not None:
+            self.settings["use_chat_logger_plugin"] = bool(data.get("enabled", False))
+            save_settings(self.settings)
+            self.web_manager.push_status()
             return {"scheduled": True}
         if action == "run_macro" and data:
             commands = data.get("commands") or []
@@ -526,6 +552,14 @@ class ManagerCore:
             self._log_sink(line)
         except Exception:
             pass
+
+    def _append_web_log(self, line: str) -> None:
+        if line is None:
+            return
+        text = str(line)
+        self.web_logs.append(text)
+        self._log(text)
+        self.web_manager.push_logs([text])
 
     def _server_reader(self) -> None:
         proc = self.server_process

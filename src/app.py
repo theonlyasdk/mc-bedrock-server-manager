@@ -18,17 +18,97 @@ from uuid import uuid4
 
 from constants import APP_AUTHOR, APP_LICENSE, APP_NAME
 from dialogs import confirm_dialog, prompt_string, show_validation_dialog
+from logger import debug, set_debug
 from properties_file import PropertiesFile
 from server_validation import (
     server_dir_missing_files,
     server_launch_command,
     validate_properties_data,
 )
-from settings_store import load_settings, save_settings
+from settings_store import load_settings, macros_path, save_settings
 from theme import apply_theme
 from WebManager import WebManagerServer
 from core_manager import ManagerCore
 from macros import MacroStore
+
+
+class _HoverTooltip:
+    def __init__(self, widget: tk.Widget, text: str, *, wraplength: int = 360, delay_ms: int = 350):
+        self._widget = widget
+        self._text = text
+        self._wraplength = wraplength
+        self._delay_ms = delay_ms
+        self._after_id: Optional[str] = None
+        self._tip: Optional[tk.Toplevel] = None
+
+        widget.bind("<Enter>", self._on_enter, add=True)
+        widget.bind("<Leave>", self._on_leave, add=True)
+        widget.bind("<ButtonPress>", self._on_leave, add=True)
+
+    def _on_enter(self, _event: tk.Event) -> None:
+        self._schedule()
+
+    def _on_leave(self, _event: tk.Event) -> None:
+        self._unschedule()
+        self._hide()
+
+    def _schedule(self) -> None:
+        self._unschedule()
+        self._after_id = self._widget.after(self._delay_ms, self._show)
+
+    def _unschedule(self) -> None:
+        if self._after_id is not None:
+            try:
+                self._widget.after_cancel(self._after_id)
+            finally:
+                self._after_id = None
+
+    def _show(self) -> None:
+        if self._tip is not None:
+            return
+
+        try:
+            root_x = self._widget.winfo_rootx()
+            root_y = self._widget.winfo_rooty()
+            height = self._widget.winfo_height()
+        except tk.TclError:
+            return
+
+        tip = tk.Toplevel(self._widget)
+        tip.wm_overrideredirect(True)
+        try:
+            tip.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        tip.configure(bg="#ffffe0")
+
+        label = tk.Label(
+            tip,
+            text=self._text,
+            justify="left",
+            bg="#ffffe0",
+            fg="#000000",
+            relief="solid",
+            borderwidth=1,
+            wraplength=self._wraplength,
+            padx=8,
+            pady=6,
+        )
+        label.pack()
+
+        tip.update_idletasks()
+        x = root_x + 16
+        y = root_y + height + 10
+        tip.geometry(f"+{x}+{y}")
+        self._tip = tip
+
+    def _hide(self) -> None:
+        if self._tip is None:
+            return
+        try:
+            self._tip.destroy()
+        finally:
+            self._tip = None
 
 TRIGGER_CANONICAL = {
     "player_login": "player_join",
@@ -54,7 +134,7 @@ VALID_TRIGGERS = {
     "chat_keyword",
 }
 
-MACROS_FILE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "macros.json"))
+MACROS_FILE_PATH = os.path.abspath(macros_path())
 WELCOME_MESSAGE = {"rawtext": [{"text": "Welcome, {player}!"}]}
 PRESET_MACROS = [
     {
@@ -171,7 +251,10 @@ class App(tk.Tk):
         apply_theme()
         self.style = ttk.Style()
 
+        debug("Starting GUI manager")
         self.settings = load_settings()
+        set_debug(bool(self.settings.get("debug", False)))
+        debug("Settings loaded")
         self.properties = None
         self.server_process = None
         self.server_start_time = None
@@ -179,7 +262,19 @@ class App(tk.Tk):
         self.server_backend = None
         self._server_dir_running = None
         self._perf_prev = None
-        self.core = ManagerCore(settings=self.settings, macros_path=MACROS_FILE_PATH)
+        self.cached_public_ip = "-"
+        self.cached_local_ip = self._get_local_ip()
+        threading.Thread(target=self._fetch_public_ip, daemon=True).start()
+        self.web_manager_host_var = tk.StringVar()
+        self.web_manager_port_var = tk.StringVar()
+        self.web_manager_status_var = tk.StringVar(value="Web manager stopped.")
+        self.web_manager = WebManagerServer(
+            status_provider=self._web_manager_status_payload,
+            command_handler=self._web_manager_command_handler,
+            macros_provider=self._macro_list_payload,
+            macro_creator=self._macro_creator_handler,
+        )
+        self.core = ManagerCore(settings=self.settings, macros_path=MACROS_FILE_PATH, web_manager=self.web_manager)
         self.server_queue = self.core.server_queue
         self.live_players = self.core.live_players
         self.web_logs = self.core.web_logs
@@ -188,19 +283,7 @@ class App(tk.Tk):
         self._macro_run_ids_by_macro = {}
         self._macro_run_requests: "queue.Queue[dict]" = queue.Queue()
         self._active_macro_run = None
-        self.cached_public_ip = "-"
-        self.cached_local_ip = self._get_local_ip()
-        threading.Thread(target=self._fetch_public_ip, daemon=True).start()
-        self.web_manager_host_var = tk.StringVar()
-        self.web_manager_port_var = tk.StringVar()
-        self.web_manager_status_var = tk.StringVar(value="Web manager stopped.")
         self.macro_store: MacroStore = self.core.macro_store
-        self.web_manager = WebManagerServer(
-            status_provider=self._web_manager_status_payload,
-            command_handler=self._web_manager_command_handler,
-            macros_provider=self._macro_list_payload,
-            macro_creator=self._macro_creator_handler,
-        )
         self.web_backup_in_progress = False
         self.web_backup_error = None
         self._log_tailer_stop = threading.Event()
@@ -213,7 +296,9 @@ class App(tk.Tk):
 
         self._build_menu()
         self._build_tabs()
+        debug("Loading preferences into UI")
         self._load_preferences_into_ui()
+        debug("Refreshing initial data")
         self._refresh_properties()
         self._refresh_backups()
         self._refresh_players()
@@ -227,7 +312,7 @@ class App(tk.Tk):
         file_menu = tk.Menu(menu, tearoff=False)
         file_menu.add_command(label="Open Server Folder", command=self._open_server_folder)
         file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.destroy)
+        file_menu.add_command(label="Exit", command=self._on_close)
         menu.add_cascade(label="File", menu=file_menu)
 
         tools_menu = tk.Menu(menu, tearoff=False)
@@ -317,8 +402,21 @@ class App(tk.Tk):
             command=self._save_preferences_from_ui,
         ).grid(row=5, column=0, columnspan=3, sticky="w", **pad)
 
+        self.use_chat_logger_plugin_var = tk.BooleanVar(value=False)
+        self.use_chat_logger_check = ttk.Checkbutton(
+            self.tab_prefs,
+            text="Use Endstone chat logger plugin",
+            variable=self.use_chat_logger_plugin_var,
+            command=self._save_preferences_from_ui,
+        )
+        self.use_chat_logger_check.grid(row=6, column=0, columnspan=3, sticky="w", **pad)
+        _HoverTooltip(
+            self.use_chat_logger_check,
+            "Enables in-game player chat forwarding to server console with a custom endstone plugin with [CHAT] prefix.",
+        )
+
         self.prefs_status = ttk.Label(self.tab_prefs, text="")
-        self.prefs_status.grid(row=6, column=0, columnspan=3, sticky="w", **pad)
+        self.prefs_status.grid(row=7, column=0, columnspan=3, sticky="w", **pad)
 
         self.tab_prefs.columnconfigure(1, weight=1)
 
@@ -493,6 +591,7 @@ class App(tk.Tk):
         if self.web_manager.is_running():
             messagebox.showinfo(APP_NAME, "Web manager is already running.")
             return
+        debug("Starting web manager (UI)")
         host = self.web_manager_host_var.get().strip() or "0.0.0.0"
         port_text = self.web_manager_port_var.get().strip()
         try:
@@ -510,14 +609,18 @@ class App(tk.Tk):
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"Failed to start web manager: {exc}")
             return
+        debug("Web manager started at {}", self.web_manager.url())
         self.settings["web_manager_host"] = host
         self.settings["web_manager_port"] = port
         save_settings(self.settings)
+        debug("Settings saved after web manager start")
         self._update_web_manager_status()
 
     def _stop_web_manager(self):
+        debug("Stopping web manager (UI)")
         self.web_manager.stop()
         self._update_web_manager_status()
+        debug("Web manager stopped (UI)")
 
     def _open_web_manager(self):
         if not self.web_manager.is_running():
@@ -550,6 +653,10 @@ class App(tk.Tk):
         if action == "set_autostart_server" and data is not None:
             enabled = bool(data.get("enabled", False))
             self.after(0, lambda: self._set_autostart_server(enabled))
+            return {"scheduled": True}
+        if action == "set_use_chat_logger_plugin" and data is not None:
+            enabled = bool(data.get("enabled", False))
+            self.after(0, lambda: self._set_use_chat_logger_plugin(enabled))
             return {"scheduled": True}
         if action == "run_macro" and data:
             commands = data.get("commands") or []
@@ -667,18 +774,29 @@ class App(tk.Tk):
                 pass
         save_settings(self.settings)
 
+    def _set_use_chat_logger_plugin(self, enabled: bool):
+        self.settings["use_chat_logger_plugin"] = bool(enabled)
+        if hasattr(self, "use_chat_logger_plugin_var"):
+            try:
+                self.use_chat_logger_plugin_var.set(bool(enabled))
+            except Exception:
+                pass
+        save_settings(self.settings)
+        self.web_manager.push_status()
+
     def _import_macros(self, macros):
         try:
             count = self.macro_store.replace_all(macros if macros is not None else [])
         except Exception as exc:
-            self.web_logs.append(f"[Macros] Import failed: {exc}\n")
+            self._append_web_log(f"[Macros] Import failed: {exc}\n")
             return
-        self.web_logs.append(f"[Macros] Imported {count} macro(s).\n")
+        self._append_web_log(f"[Macros] Imported {count} macro(s).\n")
 
     def _web_send_command(self, cmd):
         try:
             self.core.send_command(cmd)
             self._append_console(f"> {cmd}\n")
+            self.web_manager.push_logs([f"> {cmd}\n"])
         except Exception:
             pass
 
@@ -997,6 +1115,9 @@ class App(tk.Tk):
             "properties": props,
             "backups": backups,
             "logs": list(self.web_logs),
+            "chat": {
+                "use_chat_logger_plugin": bool(self.settings.get("use_chat_logger_plugin", False)),
+            },
             "network": {
                 "local_ip": self.cached_local_ip,
                 "public_ip": self.cached_public_ip,
@@ -1017,6 +1138,7 @@ class App(tk.Tk):
         server_dir = self.server_dir_var.get().strip()
         if not server_dir or not os.path.isdir(server_dir):
             return
+        debug("Autostart server enabled; starting")
         self._start_server()
 
     def _maybe_autostart_web_manager(self):
@@ -1025,8 +1147,10 @@ class App(tk.Tk):
         if not bool(self.settings.get("autostart_web_manager", False)):
             return
         try:
+            debug("Autostart web manager enabled; starting")
             self._start_web_manager()
-        except Exception:
+        except Exception as exc:
+            debug("Autostart web manager failed: {}", exc)
             # _start_web_manager already shows a dialog for validation errors; ignore unexpected failures.
             pass
 
@@ -1189,12 +1313,18 @@ class App(tk.Tk):
                 self.autostart_web_manager_var.set(bool(self.settings.get("autostart_web_manager", False)))
             except Exception:
                 pass
+        if hasattr(self, "use_chat_logger_plugin_var"):
+            try:
+                self.use_chat_logger_plugin_var.set(bool(self.settings.get("use_chat_logger_plugin", False)))
+            except Exception:
+                pass
         self.web_manager_host_var.set(self.settings.get("web_manager_host", "127.0.0.1"))
         self.web_manager_port_var.set(str(self.settings.get("web_manager_port", 5050)))
         self._validate_settings()
         self._update_web_manager_status()
 
     def _save_preferences_from_ui(self):
+        debug("Saving preferences from UI")
         self.settings["server_dir"] = self.server_dir_var.get().strip()
         self.settings["backups_dir"] = self.backups_dir_var.get().strip()
         self.settings["server_backend"] = (self.server_backend_var.get().strip() or "auto").lower()
@@ -1208,6 +1338,11 @@ class App(tk.Tk):
                 self.settings["autostart_web_manager"] = bool(self.autostart_web_manager_var.get())
             except Exception:
                 self.settings["autostart_web_manager"] = bool(self.settings.get("autostart_web_manager", False))
+        if hasattr(self, "use_chat_logger_plugin_var"):
+            try:
+                self.settings["use_chat_logger_plugin"] = bool(self.use_chat_logger_plugin_var.get())
+            except Exception:
+                self.settings["use_chat_logger_plugin"] = bool(self.settings.get("use_chat_logger_plugin", False))
         host = self.web_manager_host_var.get().strip() or "127.0.0.1"
         port_value = self.settings.get("web_manager_port", 5050)
         try:
@@ -1217,6 +1352,7 @@ class App(tk.Tk):
         self.settings["web_manager_host"] = host
         self.settings["web_manager_port"] = port_value
         save_settings(self.settings)
+        debug("Preferences saved")
 
     def _choose_server_dir(self):
         path = filedialog.askdirectory(title="Choose server folder")
@@ -1651,6 +1787,7 @@ class App(tk.Tk):
         if self.server_process and self.server_process.poll() is None:
             messagebox.showinfo(APP_NAME, "Server is already running.")
             return
+        debug("Starting server (UI)")
         server_dir = self.server_dir_var.get().strip()
         if not server_dir:
             messagebox.showwarning(APP_NAME, "Please set the server folder in Preferences.")
@@ -1663,6 +1800,7 @@ class App(tk.Tk):
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"Failed to start server: {exc}")
             return
+        debug("Server started (backend={})", self.core.server_backend)
         self.server_process = self.core.server_process
         self.server_backend = self.core.server_backend
         self._server_dir_running = server_dir
@@ -1674,6 +1812,7 @@ class App(tk.Tk):
         self.server_start_time = self.core.server_start_time or time.time()
         self.server_start_monotonic = time.monotonic()
         self._append_console("Server started.\n")
+        self.web_manager.push_status()
         self._trigger_macros_for_event("server_started", None)
         self._set_console_enabled(True)
         self._update_uptime()
@@ -1696,6 +1835,7 @@ class App(tk.Tk):
             self.server_queue.put(("server_stopped", None))
 
     def _poll_server_output(self):
+        status_changed = False
         try:
             while True:
                 item = self.server_queue.get_nowait()
@@ -1705,28 +1845,33 @@ class App(tk.Tk):
                         self.live_players.add(value)
                         self._refresh_live_players()
                         self._trigger_macros_for_event("player_connected", value)
+                        status_changed = True
                     elif event == "player_join":
                         self.live_players.add(value)
                         self._refresh_live_players()
                         self._trigger_macros_for_event("player_join", value)
+                        status_changed = True
                     elif event == "player_leave":
                         self.live_players.discard(value)
                         self._refresh_live_players()
                         self._trigger_macros_for_event("player_leave", value)
+                        status_changed = True
                     elif event == "player_death":
                         self._trigger_macros_for_event("player_death", value)
                     elif event == "server_stopped":
                         self.live_players.clear()
                         self._refresh_live_players()
                         self._trigger_macros_for_event("server_stopped", None)
+                        status_changed = True
                     elif event == "chat_message":
                         if isinstance(value, dict):
                             self._trigger_macros_for_chat_keyword(value.get("player"), value.get("message"))
                     continue
-                self.web_logs.append(item)
-                self._append_console(item)
+                self._append_web_log(item, also_console=True)
         except queue.Empty:
             pass
+        if status_changed:
+            self.web_manager.push_status()
         self._poll_macro_runs()
         if self.server_process and self.server_process.poll() is not None:
             self._stop_log_tailer()
@@ -1741,6 +1886,7 @@ class App(tk.Tk):
             self._perf_prev = None
             self.status_uptime_var.set("Uptime: -")
             self._set_console_enabled(False)
+            self.web_manager.push_status()
         self.after(200, self._poll_server_output)
 
     def _poll_macro_runs(self):
@@ -1894,6 +2040,15 @@ class App(tk.Tk):
         self.console_text.see("end")
         self.console_text.config(state="disabled")
 
+    def _append_web_log(self, text, also_console=False):
+        line = str(text or "")
+        if not line:
+            return
+        self.web_logs.append(line)
+        if also_console:
+            self._append_console(line)
+        self.web_manager.push_logs([line])
+
     def _set_console_enabled(self, enabled):
         state = "normal" if enabled else "disabled"
         self.console_input.config(state=state)
@@ -1922,7 +2077,7 @@ class App(tk.Tk):
         try:
             self.server_process.stdin.write(cmd + "\n")
             self.server_process.stdin.flush()
-            self._append_console(f"> {cmd}\n")
+            self._append_web_log(f"> {cmd}\n", also_console=True)
             self.console_input.delete(0, tk.END)
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"Failed to send command: {exc}")
@@ -1931,6 +2086,7 @@ class App(tk.Tk):
     def _stop_server(self):
         if not self.server_process or self.server_process.poll() is not None:
             return
+        debug("Stopping server (UI)")
         try:
             self.core.stop_server()
         except Exception:
@@ -1960,6 +2116,7 @@ class App(tk.Tk):
         self._set_console_enabled(False)
 
     def _on_close(self):
+        debug("Closing GUI manager")
         try:
             self.core.close()
         except Exception:
@@ -2240,7 +2397,11 @@ class App(tk.Tk):
         text = str(line or "").strip("\n")
         if not text:
             return None
+        use_chat_logger_plugin = bool(self.settings.get("use_chat_logger_plugin", False))
+        if (not use_chat_logger_plugin) and ("[CHAT]" in text):
+            return None
         patterns = [
+            r"\[CHAT\]\s*(?P<name>[^:]{1,32})\s*:\s*(?P<message>.+)$",
             r"\]:\s*<(?P<name>[^>]+)>\s*(?P<message>.+)$",
             r"\]:\s*(?P<name>[^:]{1,32})\s*:\s*(?P<message>.+)$",
         ]
