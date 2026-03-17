@@ -252,7 +252,7 @@
 
     <!-- Macro Variables Modal -->
     <div class="modal fade" id="macroVarsModal" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+      <div class="modal-dialog modal-lg modal-dialog-centered">
         <div class="modal-content bg-dark border-secondary">
           <div class="modal-header border-0 pb-1">
             <div>
@@ -271,9 +271,9 @@
               </button>
             </div>
             <div id="macroVarsEmpty" class="text-muted small d-none">No variables defined yet.</div>
-            <div id="macroVarsList" class="d-flex flex-column gap-2"></div>
+            <div id="macroVarsList" class="macro-vars-scroll"></div>
           </div>
-          <div class="modal-footer border-0 pt-0">
+          <div class="modal-footer border-0 pt-3">
             <button type="button" class="btn btn-link text-white text-decoration-none" data-bs-dismiss="modal">Cancel</button>
             <button type="button" class="btn btn-primary px-4" id="saveMacroVarsBtn">Save variables</button>
           </div>

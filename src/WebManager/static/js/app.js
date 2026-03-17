@@ -1710,51 +1710,108 @@ function renderBackupsTable(animateDiff) {
   const backupsBody = document.getElementById("backupsTableBody");
   const noBackupsMsg = document.getElementById("noBackupsMsg");
   if (!backupsBody || !noBackupsMsg) return;
-  backupsBody.innerHTML = "";
   const nextBackupsMap = new Map();
   const sortedBackups = [...backupsData].sort((a, b) => compareBackups(a, b));
   if (sortedBackups.length > 0) {
     noBackupsMsg.classList.add("d-none");
-    sortedBackups.forEach((b) => {
-      nextBackupsMap.set(b.name, b);
-      const isAdded = animateDiff && !prevBackupsMap.has(b.name);
-      const tr = document.createElement("tr");
-      if (isAdded) tr.classList.add("row-flash-add");
-      tr.innerHTML = `
-        <td class="fw-medium">${b.name}</td>
-        <td><span class="badge text-bg-dark border border-secondary">${b.size}</span></td>
-        <td class="small text-muted">${b.modified}</td>
-        <td>
-          <div class="d-flex w-100 gap-2">
-            <button class="btn btn-sm btn-outline-primary flex-fill" onclick="confirmRestore('${b.name}')" title="Restore">
-              <i class="bi bi-arrow-counterclockwise"></i>
-            </button>
-            <button class="btn btn-sm btn-outline-danger flex-fill" onclick="confirmDelete('${b.name}')" title="Delete">
-              <i class="bi bi-trash"></i>
-            </button>
-          </div>
-        </td>
-      `;
-      backupsBody.appendChild(tr);
-    });
   } else {
     noBackupsMsg.classList.remove("d-none");
   }
+
+  const existingRows = new Map();
+  backupsBody.querySelectorAll("tr[data-backup-name]").forEach((tr) => {
+    existingRows.set(tr.getAttribute("data-backup-name"), tr);
+  });
+
+  const removedNames = [];
   if (animateDiff) {
-    for (const [name, b] of prevBackupsMap.entries()) {
-      if (nextBackupsMap.has(name)) continue;
-      const tr = document.createElement("tr");
-      tr.classList.add("row-flash-remove");
-      tr.innerHTML = `
-        <td class="fw-medium">${b.name}</td>
-        <td><span class="badge text-bg-dark border border-secondary">${b.size || ""}</span></td>
-        <td class="small text-muted">${b.modified || ""}</td>
-        <td></td>
-      `;
-      backupsBody.appendChild(tr);
-      setTimeout(() => tr.remove(), 1000);
+    for (const name of prevBackupsMap.keys()) {
+      const stillThere = sortedBackups.some((b) => b.name === name);
+      if (!stillThere) removedNames.push(name);
     }
   }
+
+  function buildRow(b, isAdded) {
+    const tr = document.createElement("tr");
+    tr.setAttribute("data-backup-name", b.name);
+    if (isAdded) tr.classList.add("row-flash-add");
+    tr.innerHTML = `
+      <td class="p-0"><div class="backup-row-inner fw-medium backup-cell-name"></div></td>
+      <td class="p-0"><div class="backup-row-inner backup-cell-size"></div></td>
+      <td class="p-0"><div class="backup-row-inner small text-muted backup-cell-modified"></div></td>
+      <td class="p-0">
+        <div class="backup-row-inner">
+          <div class="d-flex w-100 gap-2">
+            <button class="btn btn-sm btn-outline-primary flex-fill backup-action-restore" title="Restore">
+              <i class="bi bi-arrow-counterclockwise"></i>
+            </button>
+            <button class="btn btn-sm btn-outline-danger flex-fill backup-action-delete" title="Delete">
+              <i class="bi bi-trash"></i>
+            </button>
+          </div>
+        </div>
+      </td>
+    `;
+    updateRow(tr, b);
+    tr.querySelector(".backup-action-restore").onclick = () => confirmRestore(b.name);
+    tr.querySelector(".backup-action-delete").onclick = () => confirmDelete(b.name);
+    return tr;
+  }
+
+  function updateRow(tr, b) {
+    const nameEl = tr.querySelector(".backup-cell-name");
+    if (nameEl) nameEl.textContent = b.name || "";
+    const sizeEl = tr.querySelector(".backup-cell-size");
+    if (sizeEl) {
+      sizeEl.innerHTML = `<span class="badge text-bg-dark border border-secondary">${b.size || ""}</span>`;
+    }
+    const modEl = tr.querySelector(".backup-cell-modified");
+    if (modEl) modEl.textContent = b.modified || "";
+  }
+
+  // If we're removing rows, keep them in-place while they collapse; don't reorder the table until after.
+  if (animateDiff && removedNames.length > 0) {
+    // Update existing rows in-place.
+    sortedBackups.forEach((b) => {
+      nextBackupsMap.set(b.name, b);
+      const isAdded = !prevBackupsMap.has(b.name);
+      let tr = existingRows.get(b.name);
+      if (!tr) {
+        tr = buildRow(b, isAdded);
+        backupsBody.appendChild(tr);
+      } else {
+        if (!tr.classList.contains("backup-row-removing")) updateRow(tr, b);
+      }
+    });
+
+    // Animate removals without moving them.
+    removedNames.forEach((name) => {
+      const tr = existingRows.get(name);
+      if (!tr || tr.classList.contains("backup-row-removing")) return;
+      tr.classList.add("backup-row-removing");
+      setTimeout(() => tr.remove(), 300);
+    });
+  } else {
+    // No removals (or no diff animation): reorder and cleanup normally.
+    sortedBackups.forEach((b) => {
+      nextBackupsMap.set(b.name, b);
+      const isAdded = animateDiff && !prevBackupsMap.has(b.name);
+      let tr = existingRows.get(b.name);
+      if (!tr) {
+        tr = buildRow(b, isAdded);
+      } else {
+        tr.classList.remove("backup-row-removing");
+        updateRow(tr, b);
+      }
+      backupsBody.appendChild(tr); // reorders
+    });
+
+    for (const [name, tr] of existingRows.entries()) {
+      if (nextBackupsMap.has(name)) continue;
+      tr.remove();
+    }
+  }
+
   prevBackupsMap = nextBackupsMap;
 }
 
@@ -3382,6 +3439,20 @@ function initMacroVariablesUI() {
   const saveMacroVarsBtn = document.getElementById("saveMacroVarsBtn");
   if (!macroVarsModal || !macroVarsList || !saveMacroVarsBtn) return;
 
+  function updateScrollShadows() {
+    const el = macroVarsList;
+    const canScroll = el.scrollHeight > el.clientHeight + 1;
+    if (!canScroll) {
+      el.classList.remove("shadow-top", "shadow-bottom");
+      return;
+    }
+    el.classList.toggle("shadow-top", el.scrollTop > 0);
+    el.classList.toggle("shadow-bottom", el.scrollTop + el.clientHeight < el.scrollHeight - 1);
+  }
+
+  macroVarsList.addEventListener("scroll", updateScrollShadows);
+  window.addEventListener("resize", updateScrollShadows);
+
   function normalizeVarName(name) {
     const raw = String(name || "").trim();
     if (!raw) return "";
@@ -3396,25 +3467,24 @@ function initMacroVariablesUI() {
     const items = Array.isArray(variable.items) ? variable.items : [];
 
     const card = document.createElement("div");
-    card.className = "card bg-black border-secondary";
+    card.className = "card bg-body-tertiary border-secondary mb-2";
     card.innerHTML = `
       <div class="card-body p-3">
-        <div class="d-flex align-items-center gap-2 flex-wrap">
-          <div class="flex-grow-1" style="min-width: 180px;">
+        <div class="row g-2 align-items-end">
+          <div class="col-12 col-md">
             <label class="form-label small text-muted mb-1">Name</label>
             <input type="text" class="form-control bg-dark border-secondary text-white macro-var-name" placeholder="e.g. kit_name" value="${escapeHtml(name)}">
-            <div class="form-text text-muted">Use as <code>{${escapeHtml(name || "var")}}</code></div>
           </div>
-          <div style="min-width: 170px;">
+          <div class="col-12 col-md-4 col-lg-3">
             <label class="form-label small text-muted mb-1">Type</label>
             <select class="form-select bg-dark border-secondary text-white macro-var-type">
               <option value="static" ${type !== "random" ? "selected" : ""}>Static value</option>
               <option value="random" ${type === "random" ? "selected" : ""}>Random from list</option>
             </select>
           </div>
-          <div class="ms-auto">
-            <button type="button" class="btn btn-sm btn-outline-danger macro-var-delete">
-              <i class="bi bi-trash"></i>
+          <div class="col-12 col-md-auto d-flex justify-content-md-end">
+            <button type="button" class="btn btn-outline-danger macro-var-delete macro-var-delete-btn" title="Delete variable" aria-label="Delete variable">
+              <i class="bi bi-trash me-1"></i><span>Delete</span>
             </button>
           </div>
         </div>
@@ -3439,6 +3509,7 @@ function initMacroVariablesUI() {
     delBtn.onclick = () => {
       card.remove();
       updateEmptyState();
+      updateScrollShadows();
     };
     typeSel.onchange = () => {
       const t = String(typeSel.value || "static").toLowerCase();
@@ -3458,6 +3529,7 @@ function initMacroVariablesUI() {
     (macroVariables || []).forEach((v) => macroVarsList.appendChild(buildRow(v)));
     updateEmptyState();
     macroVarsModal.show();
+    setTimeout(updateScrollShadows, 0);
   }
 
   function collectVariables() {
@@ -3510,10 +3582,12 @@ function initMacroVariablesUI() {
   addMacroVarBtn?.addEventListener("click", () => {
     macroVarsList.appendChild(buildRow({ type: "static" }));
     updateEmptyState();
+    updateScrollShadows();
   });
   addRandomMacroVarBtn?.addEventListener("click", () => {
     macroVarsList.appendChild(buildRow({ type: "random", items: [""] }));
     updateEmptyState();
+    updateScrollShadows();
   });
   saveMacroVarsBtn?.addEventListener("click", async () => {
     try {

@@ -618,8 +618,8 @@ class ManagerCore:
 
         leave_patterns = [
             r"Player disconnected:\s*(?P<name>.+?)(?:,|\s+xuid:|$)",
-            r"\b(?P<name>.+?)\s+left the game\b",
-            r"\bPlayer\s+(?P<name>.+?)\s+left\b",
+            r"\]:\s*(?P<name>.+?)\s+left the game\b",
+            r"\]:\s*Player\s+(?P<name>.+?)\s+left\b",
             r"Lost connection:\s*(?P<name>.+?)(?:,|\s+xuid:|$)",
         ]
         for pattern in leave_patterns:
@@ -638,7 +638,11 @@ class ManagerCore:
         text = str(line or "").strip("\n")
         if not text:
             return None
+        use_chat_logger_plugin = bool(self.settings.get("use_chat_logger_plugin", False))
+        if (not use_chat_logger_plugin) and ("[CHAT]" in text):
+            return None
         patterns = [
+            r"\[CHAT\]\s*(?P<name>[^:]{1,32})\s*:\s*(?P<message>.+)$",
             r"\]:\s*<(?P<name>[^>]+)>\s*(?P<message>.+)$",
             r"\]:\s*(?P<name>[^:]{1,32})\s*:\s*(?P<message>.+)$",
         ]
@@ -649,6 +653,8 @@ class ManagerCore:
             name = self._clean_player_name(match.group("name"))
             message = (match.group("message") or "").strip()
             if not name or not message:
+                continue
+            if use_chat_logger_plugin and "[CHAT]" not in text and pattern != patterns[0]:
                 continue
             return {"player": name, "message": message}
         return None

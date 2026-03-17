@@ -239,6 +239,48 @@ PRESET_MACROS = [
         "trigger": "chat_keyword",
         "chat_keyword": "!title",
         "description": "Type in chat: !title Your message (shows a centered title).",
+    },
+    {
+        "id": "preset-night-vision",
+        "title": "Night Vision Boost",
+        "icon": "bi-moon-stars",
+        "commands": ["effect {player} night_vision 600 0 true"],
+        "trigger": "chat_keyword",
+        "chat_keyword": "!nv",
+        "description": "Type !nv in chat to give yourself night vision for 10 minutes.",
+    },
+    {
+        "id": "preset-sunrise",
+        "title": "Morning Reset",
+        "icon": "bi-brightness-alt-high",
+        "commands": ["time set sunrise", "weather clear"],
+        "trigger": "server_started",
+        "description": "Start each server session at sunrise with clear weather.",
+    },
+    {
+        "id": "preset-feed-player",
+        "title": "Join Food Refill",
+        "icon": "bi-basket2",
+        "commands": ["effect {player} saturation 2 255 true"],
+        "trigger": "player_join",
+        "description": "Refill hunger for players when they join.",
+    },
+    {
+        "id": "preset-bedtime-reminder",
+        "title": "Sleep Reminder",
+        "icon": "bi-moon",
+        "commands": ["say §9Night has fallen. Sleep to skip the darkness."],
+        "trigger": "time",
+        "time_of_day": "21:00",
+        "description": "Send a reminder every evening at 21:00 server local time.",
+    },
+    {
+        "id": "preset-goodbye-message",
+        "title": "Logout Message",
+        "icon": "bi-box-arrow-right",
+        "commands": ["tellraw @a {\"rawtext\":[{\"text\":\"§7{player} left the server. See you next time!\"}]}"],
+        "trigger": "player_leave",
+        "description": "Broadcast a short farewell when a player leaves.",
     }
 ]
 
@@ -698,14 +740,16 @@ class App(tk.Tk):
             if cmd:
                 initial_len = len(self.web_logs)
                 self.after(0, lambda: self._web_send_command(cmd))
-                
-                # Strict wait: wait for echo (> cmd) AND server response
+
+                # A queued command only guarantees the echoed "> cmd" log line.
+                # Many commands (including tell/tellraw chat sends) do not emit a
+                # second response line, so waiting for two new entries stalls the UI.
                 start_wait = time.time()
-                while time.time() - start_wait < 10: # 10s timeout
-                    if len(self.web_logs) > initial_len + 1:
+                while time.time() - start_wait < 2:
+                    if len(self.web_logs) > initial_len:
                         return {"success": True, "status": "processed"}
                     time.sleep(0.1)
-                return {"success": True, "status": "timeout"}
+                return {"success": True, "status": "queued"}
         if action == "update_property" and data:
             key = data.get("key")
             value = data.get("value")
@@ -843,6 +887,11 @@ class App(tk.Tk):
             ],
             "requested_at": time.time(),
         }
+        if request["macro_id"]:
+            try:
+                self.macro_store.increment_times_ran(request["macro_id"])
+            except Exception:
+                pass
         self._macro_run_requests.put(request)
         with self._macro_runs_lock:
             self._macro_runs_by_id[run_id] = {
@@ -863,9 +912,19 @@ class App(tk.Tk):
         return run_id
 
     def _macro_list_payload(self):
-        return {"macros": self.macro_store.list(), "presets": PRESET_MACROS}
+        return {"macros": self.macro_store.list(), "presets": PRESET_MACROS, "variables": self.macro_store.list_variables()}
 
     def _macro_creator_handler(self, payload: dict):
+        if payload.get("set_variables"):
+            variables = payload.get("variables")
+            if variables is None:
+                return {"error": "Variables payload is required"}
+            try:
+                cleaned = self.macro_store.set_variables(variables)
+            except Exception as exc:
+                return {"error": str(exc) or "Failed to save variables"}
+            return {"variables_saved": True, "variables": cleaned}
+
         if payload.get("delete"):
             macro_id = str(payload.get("id") or "").strip()
             if not macro_id:
@@ -2385,8 +2444,8 @@ class App(tk.Tk):
 
         leave_patterns = [
             r"Player disconnected:\s*(?P<name>[^,]+)",
-            r"\b(?P<name>.+?)\s+left the game\b",
-            r"\bPlayer\s+(?P<name>.+?)\s+left\b",
+            r"\]:\s*(?P<name>.+?)\s+left the game\b",
+            r"\]:\s*Player\s+(?P<name>.+?)\s+left\b",
             r"Lost connection:\s*(?P<name>[^,]+)",
         ]
         for pattern in leave_patterns:
