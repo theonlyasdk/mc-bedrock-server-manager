@@ -100,6 +100,13 @@ let chatPrefix = "";
 let backupProgressVisible = false;
 const pageLoadingOverlay = document.getElementById("page-loading-overlay");
 
+const backupProgressModalEl = document.getElementById("backupProgressModal");
+if (backupProgressModalEl) {
+  backupProgressModalEl.addEventListener("hidden.bs.modal", () => {
+    backupProgressVisible = false;
+  });
+}
+
 function showError(msg) {
   document.getElementById("errorToastBody").textContent = msg || "An internal error occurred.";
   errorToast.show();

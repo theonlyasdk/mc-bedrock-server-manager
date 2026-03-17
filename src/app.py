@@ -999,6 +999,11 @@ class App(tk.Tk):
             safe_name = f"mcbak-{timestamp}_{world_name}"
         base_name = os.path.join(backups_dir, safe_name)
         self.web_backup_in_progress = True
+        self.web_backup_error = None
+        try:
+            self.web_manager.push_status()
+        except Exception:
+            pass
 
         def worker():
             error = None
@@ -1016,6 +1021,10 @@ class App(tk.Tk):
         if error:
             self.web_backup_error = f"Backup failed: {error}"
         self._refresh_backups()
+        try:
+            self.web_manager.push_status()
+        except Exception:
+            pass
 
     def _restore_backup_logic(self, path):
         # Simplified restore logic for web call
