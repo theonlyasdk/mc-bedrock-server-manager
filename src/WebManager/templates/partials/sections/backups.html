@@ -1,0 +1,35 @@
+          <section id="section-backups" class="d-none">
+            <div class="page-header">
+              <h2 class="h4 mb-0">World Backups</h2>
+              <button class="btn btn-sm btn-primary shadow-sm" id="newBackupBtn">
+                <i class="bi bi-plus-lg me-1"></i>New Backup
+              </button>
+            </div>
+            <div class="section-body">
+              <div class="table-section-flush">
+                <div class="table-container table-flush">
+                  <div class="table-responsive">
+                    <table class="table table-dark table-hover mb-0 align-middle table-col-borders">
+                      <thead class="table-dark">
+                        <tr>
+                          <th id="backupsSortName" class="sortable-th" role="button">Name</th>
+                          <th id="backupsSortSize" class="sortable-th" role="button">Size</th>
+                          <th id="backupsSortModified" class="sortable-th" role="button">Modified</th>
+                          <th class="text-start">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody id="backupsTableBody">
+                        <!-- Backups populated by JS -->
+                      </tbody>
+                    </table>
+                  </div>
+                  <div id="noBackupsMsg" class="p-5 text-center text-muted d-none">
+                    <i class="bi bi-cloud-slash h1 d-block mb-3 opacity-25"></i>
+                    No backups found.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Settings Section -->

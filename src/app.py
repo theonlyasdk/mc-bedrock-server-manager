@@ -44,6 +44,7 @@ TRIGGER_CANONICAL = {
 VALID_TRIGGERS = {
     "manual",
     "interval",
+    "time",
     "player_connected",
     "player_join",
     "player_leave",
@@ -65,6 +66,99 @@ PRESET_MACROS = [
         ],
         "trigger": "player_join",
         "description": "Send a friendly greeting when someone logs in.",
+    },
+    {
+        "id": "preset-auto-save",
+        "title": "Auto-Save World",
+        "icon": "bi-save",
+        "commands": ["save hold", "save query", "save resume"],
+        "trigger": "interval",
+        "interval_seconds": 3600,
+        "description": "Force a world save every hour.",
+    },
+    {
+        "id": "preset-clear-lag",
+        "title": "Clear Entities (Lag Fix)",
+        "icon": "bi-trash",
+        "commands": ["kill @e[type=item]", "say Lag cleared: Dropped items removed."],
+        "trigger": "manual",
+        "description": "Remove all dropped items from the world to reduce lag.",
+    },
+    {
+        "id": "preset-day-cycle",
+        "title": "Always Day",
+        "icon": "bi-sun",
+        "commands": ["alwaysday on", "time set day"],
+        "trigger": "server_started",
+        "description": "Ensures it is always daytime when the server starts.",
+    },
+    {
+        "id": "preset-op-creative",
+        "title": "OP Creative Mode",
+        "icon": "bi-shield-check",
+        "commands": ["gamemode creative @p[tag=admin]", "ability @p[tag=admin] mayfly true"],
+        "trigger": "player_join",
+        "description": "Automatically set admins to creative mode and enable flight.",
+    },
+    {
+        "id": "preset-world-border-warn",
+        "title": "Border Warning",
+        "icon": "bi-exclamation-triangle",
+        "commands": ["titleraw @a actionbar {\"rawtext\":[{\"text\":\"§cWarning: Stay within the server borders!\"}]}"],
+        "trigger": "interval",
+        "interval_seconds": 300,
+        "description": "Display a recurring warning in the action bar.",
+    },
+    {
+        "id": "preset-death-coordinates",
+        "title": "Death Notification",
+        "icon": "bi-skull",
+        "commands": ["tellraw @a {\"rawtext\":[{\"text\":\"§e{player} §7has fallen at their current location.\"}]}"],
+        "trigger": "player_death",
+        "description": "Notify all players when someone dies.",
+    },
+    {
+        "id": "preset-rest-reminder",
+        "title": "Rest Reminder",
+        "icon": "bi-alarm",
+        "commands": ["say §bRemember to take a break and hydrate!"],
+        "trigger": "interval",
+        "interval_seconds": 7200,
+        "description": "Send a friendly reminder every 2 hours.",
+    },
+    {
+        "id": "preset-maintenance-mode",
+        "title": "Maintenance Start",
+        "icon": "bi-hammer",
+        "commands": ["say §cServer entering maintenance in 1 minute!", "wait 60", "kick @a Server maintenance in progress.", "whitelist on"],
+        "trigger": "manual",
+        "description": "Warn players, kick everyone, and enable whitelist.",
+    },
+    {
+        "id": "preset-welcome-kit",
+        "title": "New Player Kit",
+        "icon": "bi-gift",
+        "commands": ["give {player} stone_sword", "give {player} bread 16", "give {player} torch 32"],
+        "trigger": "player_join",
+        "description": "Give basic tools and food to joining players.",
+    },
+    {
+        "id": "preset-weather-clear",
+        "title": "Clear Weather",
+        "icon": "bi-cloud-sun",
+        "commands": ["weather clear"],
+        "trigger": "chat_keyword",
+        "chat_keyword": "!sun",
+        "description": "Clears the weather when someone types !sun in chat.",
+    },
+    {
+        "id": "preset-center-title",
+        "title": "Center Screen Text",
+        "icon": "bi-chat-square-text",
+        "commands": ["title @a title {message_text}"],
+        "trigger": "chat_keyword",
+        "chat_keyword": "!title",
+        "description": "Type in chat: !title Your message (shows a centered title).",
     }
 ]
 
@@ -112,6 +206,10 @@ class App(tk.Tk):
         self._log_tailer_stop = threading.Event()
         self._log_tailer_thread = None
         self._log_tailer_path = None
+
+        self._resource_history = deque(maxlen=1440)
+        self._resource_history_stop = threading.Event()
+        threading.Thread(target=self._resource_history_loop, daemon=True).start()
 
         self._build_menu()
         self._build_tabs()
@@ -456,10 +554,12 @@ class App(tk.Tk):
         if action == "run_macro" and data:
             commands = data.get("commands") or []
             macro_id = data.get("macro_id")
+            player_name = data.get("player_name", "")
+            message = data.get("message", "")
             commands = [str(c).strip() for c in commands if str(c).strip()]
             if commands:
                 macro_title = str(data.get("macro_title") or "").strip()
-                run_id = self._queue_macro_run(commands, macro_id=macro_id, macro_title=macro_title)
+                run_id = self._queue_macro_run(commands, macro_id=macro_id, macro_title=macro_title, player_name=player_name, message=message)
                 return {"success": True, "run_id": run_id}
             return {"error": "No commands provided"}
         if action == "get_macro_run" and data:
@@ -582,19 +682,47 @@ class App(tk.Tk):
         except Exception:
             pass
 
-    def _run_macro_commands(self, commands, macro_id=None):
+    def _run_macro_commands(self, commands, macro_id=None, player_name: str = "", message: str = ""):
         if macro_id:
             self.macro_store.increment_times_ran(macro_id)
+        msg = str(message or "")
+        msg_text = msg
+        msg_keyword = ""
+        if msg:
+            msg_keyword = msg.split()[0]
+            msg_text = msg[len(msg_keyword):].lstrip() if msg.lower().startswith(msg_keyword.lower()) else msg
         for cmd in commands:
-            self.after(0, lambda c=cmd: self._web_send_command(c))
+            rendered = (
+                str(cmd or "")
+                .replace("{player}", player_name)
+                .replace("{message}", msg)
+                .replace("{message_keyword}", msg_keyword)
+                .replace("{message_text}", msg_text)
+            )
+            self.after(0, lambda c=rendered: self._web_send_command(c))
 
-    def _queue_macro_run(self, commands, macro_id=None, macro_title: str = "") -> str:
+    def _queue_macro_run(self, commands, macro_id=None, macro_title: str = "", player_name: str = "", message: str = "") -> str:
         run_id = str(uuid4())
+        msg = str(message or "")
+        msg_text = msg
+        msg_keyword = ""
+        if msg:
+            msg_keyword = msg.split()[0]
+            msg_text = msg[len(msg_keyword):].lstrip() if msg.lower().startswith(msg_keyword.lower()) else msg
         request = {
             "run_id": run_id,
             "macro_id": str(macro_id or "").strip() or None,
             "macro_title": str(macro_title or "").strip(),
-            "commands": [str(c).strip() for c in (commands or []) if str(c).strip()],
+            "commands": [
+                str(c)
+                .strip()
+                .replace("{player}", player_name)
+                .replace("{message}", msg)
+                .replace("{message_keyword}", msg_keyword)
+                .replace("{message_text}", msg_text)
+                for c in (commands or [])
+                if str(c).strip()
+            ],
             "requested_at": time.time(),
         }
         self._macro_run_requests.put(request)
@@ -649,6 +777,9 @@ class App(tk.Tk):
         chat_keyword = str(payload.get("chat_keyword") or "").strip()
         if trigger != "chat_keyword":
             chat_keyword = ""
+        time_of_day = str(payload.get("time_of_day") or "").strip()
+        if trigger != "time":
+            time_of_day = ""
         interval_seconds = 0
         try:
             interval_seconds = int(payload.get("interval_seconds", 0) or 0)
@@ -664,6 +795,7 @@ class App(tk.Tk):
                 icon=icon or "bi-gear-fill",
                 commands=commands,
                 interval_seconds=interval_seconds,
+                time_of_day=time_of_day,
                 trigger=trigger,
                 chat_keyword=chat_keyword,
             )
@@ -675,6 +807,7 @@ class App(tk.Tk):
             icon=icon or "bi-gear-fill",
             commands=commands,
             interval_seconds=interval_seconds,
+            time_of_day=time_of_day,
             trigger=trigger,
             chat_keyword=chat_keyword,
         )
@@ -871,6 +1004,7 @@ class App(tk.Tk):
             },
             "server_start_time": self.server_start_time if running else None,
             "server_uptime_seconds": uptime_seconds,
+            "resource_history": list(self._resource_history),
             "backup_in_progress": self.web_backup_in_progress,
             "backup_error": backup_error,
         }
@@ -910,6 +1044,18 @@ class App(tk.Tk):
             self.server_start_monotonic = None
             self.status_uptime_var.set("Uptime: -")
 
+    def _resource_history_loop(self):
+        while not self._resource_history_stop.is_set():
+            if self.server_process and self.server_process.poll() is None:
+                metrics = self._server_process_metrics()
+                if metrics:
+                    self._resource_history.append({
+                        "timestamp": time.time(),
+                        "cpu": metrics.get("cpu_percent") or 0,
+                        "mem": metrics.get("mem_percent") or 0
+                    })
+            self._resource_history_stop.wait(60)
+
     def _server_process_metrics(self) -> dict:
         proc = self.server_process
         if not proc or proc.poll() is not None or not proc.pid:
@@ -928,11 +1074,17 @@ class App(tk.Tk):
         proc_ticks = None
         try:
             with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as fp:
-                parts = fp.read().strip().split()
-            if len(parts) >= 17:
-                utime = int(parts[13])
-                stime = int(parts[14])
-                proc_ticks = utime + stime
+                stat_line = fp.read().strip()
+            # /proc/<pid>/stat includes the process name in parentheses and it may contain spaces.
+            # Parse by locating the closing paren and splitting the remainder.
+            close_idx = stat_line.rfind(")")
+            if close_idx != -1:
+                rest = stat_line[close_idx + 2 :].split()  # fields 3..N
+                # rest[11] = utime (field 14), rest[12] = stime (field 15)
+                if len(rest) >= 13:
+                    utime = int(rest[11])
+                    stime = int(rest[12])
+                    proc_ticks = utime + stime
         except Exception:
             proc_ticks = None
 
@@ -1708,10 +1860,7 @@ class App(tk.Tk):
             commands = macro.get("commands") or []
             if not commands:
                 continue
-            rendered = []
-            for cmd in commands:
-                rendered.append(str(cmd or "").replace("{player}", name))
-            self._run_macro_commands(rendered)
+            self._queue_macro_run(commands, macro_id=macro.get("id"), macro_title=macro.get("title", ""), player_name=name)
 
     def _trigger_macros_for_chat_keyword(self, player_name=None, message: str = ""):
         msg = str(message or "")
@@ -1737,36 +1886,7 @@ class App(tk.Tk):
             commands = macro.get("commands") or []
             if not commands:
                 continue
-            rendered = []
-            for cmd in commands:
-                cmd_text = str(cmd or "")
-                cmd_text = cmd_text.replace("{player}", name)
-                cmd_text = cmd_text.replace("{message}", msg)
-                rendered.append(cmd_text)
-            self._run_macro_commands(rendered, macro_id=macro.get("id"))
-
-    def _trigger_player_join_macros(self, player_name: str):
-        name = str(player_name or "").strip()
-        if not name:
-            return
-        try:
-            macros = self.macro_store.list()
-        except Exception:
-            return
-        for macro in macros:
-            if not isinstance(macro, dict):
-                continue
-            if (macro.get("trigger") or "manual") != "player_join":
-                continue
-            commands = macro.get("commands") or []
-            if not commands:
-                continue
-            rendered = []
-            for cmd in commands:
-                cmd_text = str(cmd or "")
-                cmd_text = cmd_text.replace("{player}", name)
-                rendered.append(cmd_text)
-            self._run_macro_commands(rendered)
+            self._queue_macro_run(commands, macro_id=macro.get("id"), macro_title=macro.get("title", ""), player_name=name, message=msg)
 
     def _append_console(self, text):
         self.console_text.config(state="normal")

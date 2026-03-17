@@ -1,0 +1,38 @@
+          <section id="section-settings" class="d-none">
+            <div class="page-header">
+              <h2 class="h4 mb-0">Settings</h2>
+            </div>
+            <div class="section-body p-4">
+              <div class="card shadow-sm border-0 bg-dark-subtle">
+                <div class="card-body">
+                  <div class="text-muted small text-uppercase fw-bold mb-2">Server Backend</div>
+                  <select id="serverBackendSelectSettings" class="form-select form-select-sm w-auto">
+                    <option value="auto">Auto</option>
+                    <option value="endstone">Endstone</option>
+                    <option value="bedrock">Bedrock</option>
+                  </select>
+                  <div class="form-check form-switch mt-3">
+                    <input class="form-check-input" type="checkbox" role="switch" id="autostartServerCheckboxSettings" />
+                    <label class="form-check-label" for="autostartServerCheckboxSettings">Autostart server on manager start</label>
+                  </div>
+                  <hr class="border-secondary opacity-25 my-3" />
+                  <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-2">
+                    <div class="text-muted small text-uppercase fw-bold">Update Interval</div>
+                    <div class="small text-muted"><span id="updateIntervalLabel">5</span>s</div>
+                  </div>
+                  <input
+                    type="range"
+                    class="form-range"
+                    id="updateIntervalSlider"
+                    min="2"
+                    max="30"
+                    step="1"
+                    value="5"
+                  />
+                  <div class="small text-muted">Controls how often the dashboard auto-refreshes.</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Quick Macros Section -->

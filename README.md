@@ -5,6 +5,7 @@ MC Bedrock Server Manager is a simple and easy way to setup and manage your Mine
 - A nice table view for editing `server.properties`
 - Easy world backups management
 - Start and manage server, view players list, all from a single view
+- In the Web Manager console, when the server isn’t running you’ll see a simple “server is offline” message instead of an empty console area
 
 ## Screenshots
 

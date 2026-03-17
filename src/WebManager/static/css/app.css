@@ -4,7 +4,7 @@
   --common-border-radius: 13px;
   --bs-body-font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans",
     "Liberation Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
-  --bs-font-monospace: "Inconsolata", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+  --bs-font-monospace: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
     monospace;
 }
 
@@ -139,9 +139,28 @@ body {
 .chat-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 6px;
   color: rgba(255, 255, 255, 0.68);
+}
+
+.chat-label {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.chat-label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-timestamp {
+  flex-shrink: 0;
+  font-size: 0.85em;
+  opacity: 0.8;
 }
 
 .chat-text {
@@ -286,6 +305,16 @@ pre,
   position: relative;
 }
 
+.sidebar-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  z-index: 1030;
+}
+
 #sidebar-wrapper {
   width: var(--sidebar-width);
   min-width: var(--sidebar-width);
@@ -368,6 +397,10 @@ pre,
     transform: translateX(0);
     box-shadow: 10px 0 30px rgba(0, 0, 0, 0.5);
     border-right: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  #wrapper.toggled .sidebar-backdrop {
+    opacity: 1;
+    pointer-events: auto;
   }
 }
 
@@ -474,6 +507,89 @@ pre,
 .table-container {
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+
+.player-actions-card,
+.player-actions-card .card-body,
+.player-actions-card .list-group,
+.player-actions-card .list-group-item {
+  overflow: visible !important;
+}
+
+.split-view {
+  display: flex;
+  gap: 0;
+  width: 100%;
+  min-height: 0;
+  padding: 0.75rem;
+  flex: 1 1 auto;
+}
+
+.split-pane {
+  min-width: 220px;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--common-border-radius);
+}
+
+.split-divider {
+  flex: 0 0 10px;
+  width: 10px;
+  cursor: col-resize;
+  position: relative;
+  touch-action: none;
+  margin: 0 6px;
+}
+
+.split-divider::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  width: 2px;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+}
+
+.split-divider:hover::before,
+.split-divider.dragging::before {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+@media (max-width: 991.98px) {
+  .split-view {
+    flex-direction: column;
+  }
+  .split-view.mobile-tab-chat .split-pane-primary {
+    display: none !important;
+  }
+  .split-view.mobile-tab-logs #chatPanel {
+    display: none !important;
+  }
+  .split-pane {
+    min-height: min(500px, 100%);
+  }
+  .split-divider {
+    flex: 0 0 10px;
+    width: 100%;
+    height: 10px;
+    cursor: row-resize;
+    margin: 6px 0;
+  }
+  .split-divider::before {
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 100%;
+    height: 2px;
+  }
 }
 
 .table-container {
@@ -600,22 +716,21 @@ tr:hover .edit-icon {
   word-break: break-all;
 }
 
-#serverLogs::-webkit-scrollbar,
-#page-content-wrapper::-webkit-scrollbar,
-#sidebar-wrapper::-webkit-scrollbar {
+::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
 
-#serverLogs::-webkit-scrollbar-thumb,
-#page-content-wrapper::-webkit-scrollbar-thumb,
-#sidebar-wrapper::-webkit-scrollbar-thumb {
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
   background: #484f58;
   border-radius: 4px;
 }
 
-#serverLogs::-webkit-scrollbar-thumb:hover,
-#page-content-wrapper::-webkit-scrollbar-thumb:hover,
-#sidebar-wrapper::-webkit-scrollbar-thumb:hover {
+::-webkit-scrollbar-thumb:hover {
   background: #6e7681;
 }
 
@@ -701,7 +816,7 @@ tr:hover .edit-icon {
   margin-bottom: 0.35rem;
   background: rgba(33, 37, 41, 0.98);
   border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 0.75rem;
+  border-radius: var(--common-border-radius) !important;
   overflow: hidden;
   z-index: 1060;
   max-height: 220px;
@@ -723,7 +838,7 @@ tr:hover .edit-icon {
 
 .toolbox-preview {
   min-height: 240px;
-  font-family: "Inconsolata", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 30px;
   line-height: 1.2;
   white-space: pre-wrap;
@@ -768,7 +883,11 @@ tr:hover .edit-icon {
 }
 
 #section-macros .card-body {
-  min-height: 360px;
+  min-height: 0;
+}
+
+#section-macros .section-body {
+  overflow-y: auto;
 }
 
 #macroGrid .macro-card {
@@ -793,12 +912,12 @@ tr:hover .edit-icon {
 
 #macroGrid .macro-actions {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 0.5rem;
 }
 
 #macroGrid .macro-actions .execute-btn {
-  grid-column: span 3;
+  grid-column: span 1;
 }
 
 #macroGrid .macro-actions .edit-btn {
@@ -823,58 +942,63 @@ tr:hover .edit-icon {
   font-size: 2em;
   color: rgba(255, 255, 255, 0.5);
 }
-
-.preset-macro-scroll {
+.preset-macros-card {
+  background: rgba(0, 0, 0, 0.15);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-left: none;
+  border-right: none;
+  border-radius: 0;
+  padding: 1.15rem 2.5rem 0.25rem 2.5rem;
+  margin-left: -2.5rem;
+  margin-right: -2.5rem;
+  width: auto;
   min-height: 0;
   overflow-x: auto;
-  padding-bottom: 0.35rem;
+  overflow-y: hidden;
+  align-items: stretch;
+  padding-bottom: 1.15rem;
 }
 
-.preset-macro-scroll .macro-preset-card {
+.preset-macros-card .macro-preset-card {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 0.75rem;
   padding: 0.85rem 0.9rem;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(255, 255, 255, 0.03);
   display: flex;
   flex-direction: column;
+  justify-content: space-between;
   gap: 0.45rem;
   max-width: 220px;
   flex: 0 0 auto;
+  height: 100%;
 }
 
-.preset-macro-scroll .macro-preset-card p {
+.preset-macros-card .macro-preset-card p {
   margin: 0;
 }
 
-.preset-macro-scroll .macro-preset-card .btn {
+.preset-macros-card .macro-preset-card .btn {
   text-transform: none;
+  margin-top: auto;
 }
 
-.preset-macro-scroll .preset-macro-wrap {
+.preset-macros-card .preset-macro-wrap {
   flex: 0 0 auto;
+  display: flex;
 }
 
 #section-toolbox .section-body {
-  min-height: 0;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-#section-toolbox .section-body > .card {
-  flex: 1;
+  overflow-y: auto;
 }
 
 #section-toolbox .toolbox-card {
-  height: 100%;
   box-shadow: none !important;
 }
 
 #section-toolbox .toolbox-card-body {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  min-height: 480px;
 }
 
 #section-toolbox .card,
@@ -889,21 +1013,42 @@ tr:hover .edit-icon {
 }
 
 #section-toolbox .toolbox-preview {
-  height: 100%;
+  min-height: 220px;
 }
 
 #section-toolbox .toolbox-panel-row {
-  flex: 1;
   min-height: 0;
 }
 
 #section-toolbox textarea#motdInput {
-  flex: 1;
-  min-height: 0;
+  min-height: 220px;
+}
+
+@media (max-width: 767.98px) {
+  #section-toolbox .toolbox-formatters {
+    flex: 1 0 100%;
+    width: 100%;
+    flex-wrap: nowrap;
+  }
+
+  #section-toolbox .toolbox-formatters .btn {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  #section-toolbox .toolbox-toolbar-actions {
+    margin-left: 0 !important;
+    flex: 1 0 100%;
+    justify-content: flex-start;
+  }
+
+  #section-toolbox #toolboxSendEveryoneBtn {
+    flex: 1 1 auto;
+  }
 }
 
 #quickMacroCommands {
-  font-family: "Inconsolata", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
 #chatMessagesList {

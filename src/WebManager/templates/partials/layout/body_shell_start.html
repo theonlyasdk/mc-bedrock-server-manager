@@ -1,0 +1,80 @@
+    <div id="page-loading-overlay">
+      <div class="page-loading-inner">
+        <span class="page-loader" aria-hidden="true"></span>
+        <div class="text-muted small text-uppercase fw-bold">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Top Navbar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark border-bottom border-secondary">
+      <div class="container-fluid">
+        <button class="btn btn-outline-secondary me-2" id="menu-toggle" title="Toggle Sidebar">
+          <i class="bi bi-list"></i>
+        </button>
+        <span class="navbar-brand fw-bold mb-0 h1 text-truncate" style="margin-left: 0;">MC Bedrock Server Manager</span>
+        <div class="ms-auto d-flex align-items-center gap-2">
+          <button class="btn btn-sm btn-outline-primary" id="refreshBtn">
+            <i class="bi bi-arrow-clockwise me-md-1"></i> <span class="d-none d-md-inline">Refresh</span>
+          </button>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Toast Container for Errors and Notifications -->
+    <div class="toast-container position-fixed top-0 end-0 p-3 mt-5" style="z-index: 1100;">
+      <div id="errorToast" class="toast align-items-center text-bg-danger border-0" role="alert" aria-live="assertive" aria-atomic="true">
+        <div class="d-flex">
+          <div class="toast-body" id="errorToastBody">
+            <!-- Error message here -->
+          </div>
+          <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+      </div>
+      <!-- Chat Notification Toast -->
+      <div id="chatNotificationToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+        <div class="toast-header">
+          <i class="bi bi-chat-dots-fill me-2"></i>
+          <strong class="me-auto">New Message</strong>
+          <small>Just now</small>
+          <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+        <div class="toast-body" id="chatNotificationBody">
+          <!-- Chat message preview here -->
+        </div>
+      </div>
+    </div>
+
+    <div id="wrapper">
+      <!-- Sidebar -->
+      <div class="bg-dark border-end border-secondary" id="sidebar-wrapper">
+        <div class="p-3">
+          <nav class="nav nav-pills flex-column gap-1">
+            <a class="nav-link active" id="nav-details" onclick="showSection('details')">
+              <i class="bi bi-speedometer2 me-2"></i>Dashboard
+            </a>
+            <a class="nav-link text-white" id="nav-console" onclick="showSection('console')">
+              <i class="bi bi-terminal-fill me-2"></i>Server Console
+            </a>
+            <a class="nav-link text-white" id="nav-properties" onclick="showSection('properties')">
+              <i class="bi bi-gear-fill me-2"></i>Server Properties
+            </a>
+            <a class="nav-link text-white" id="nav-backups" onclick="showSection('backups')">
+              <i class="bi bi-archive-fill me-2"></i>World Backups
+            </a>
+            <a class="nav-link text-white" id="nav-macros" onclick="showSection('macros')">
+              <i class="bi bi-lightning-charge me-2"></i>Quick Macros
+            </a>
+            <a class="nav-link text-white" id="nav-toolbox" onclick="showSection('toolbox')">
+              <i class="bi bi-tools me-2"></i>Toolbox
+            </a>
+            <a class="nav-link text-white" id="nav-settings" onclick="showSection('settings')">
+              <i class="bi bi-sliders me-2"></i>Settings
+            </a>
+          </nav>
+        </div>
+      </div>
+      <div id="sidebarBackdrop" class="sidebar-backdrop" aria-hidden="true"></div>
+
+      <!-- Page Content -->
+      <div id="page-content-wrapper">
+        <div class="page-container-wrapper container-fluid p-0">

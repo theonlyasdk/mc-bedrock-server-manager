@@ -1,0 +1,123 @@
+          <section id="section-console" class="d-none">
+            <div class="page-header">
+              <h2 class="h4 mb-0">Server Console</h2>
+              <div class="ms-auto d-flex align-items-center gap-2 d-lg-none">
+                <div class="btn-group" role="group" aria-label="Console view tabs">
+                  <button type="button" class="btn btn-outline-light" id="consoleTabLogs">
+                    <i class="bi bi-terminal-fill me-2"></i>Logs
+                  </button>
+                  <button type="button" class="btn btn-outline-light" id="consoleTabChat">
+                    <i class="bi bi-chat-dots-fill me-2"></i>Chat
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="section-body p-0 h-100">
+              <div id="consoleOnlineLayout" class="split-view h-100">
+                <div class="split-pane split-pane-primary">
+                  <div
+                    id="logsContainer"
+                    class="d-none animate-in flex-fill overflow-hidden d-flex flex-column"
+                  >
+                    <div class="flex-fill overflow-auto">
+                      <pre id="serverLogs" class="m-0 px-4 py-3 font-monospace text-white" style="line-height:1.4;"></pre>
+                    </div>
+                    <div class="p-3 border-top border-secondary">
+                      <div class="input-group position-relative">
+                        <input
+                          type="text"
+                          id="commandInput"
+                          class="form-control bg-dark border-secondary text-white"
+                          placeholder="Enter server command..."
+                          autocomplete="off"
+                        />
+                        <div id="commandMentionPopup" class="command-mention-popup d-none">
+                          <div class="list-group list-group-flush" id="commandMentionList"></div>
+                        </div>
+                        <button class="btn btn-secondary px-3" id="sendCommandBtn" type="button">
+                          <i class="bi bi-send-fill"></i>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div id="consoleSplitDivider" class="split-divider" role="separator" aria-label="Resize console panes" tabindex="0"></div>
+                <div id="chatPanel" class="split-pane split-pane-secondary d-flex flex-column gap-3 mt-0 d-none">
+                  <div class="d-flex flex-column overflow-hidden flex-fill h-100">
+                    <div class="px-3 py-2 border-bottom border-secondary d-flex align-items-center justify-content-between">
+                      <div>
+                        <div class="text-muted small mb-1">Chat Recipient</div>
+                        <div class="fw-semibold d-flex align-items-center gap-2 text-white" id="chatRecipientLabel">
+                          <i class="bi bi-at"></i>
+                          Everyone
+                        </div>
+                      </div>
+                      <div class="d-flex align-items-center gap-2">
+                        <button
+                          type="button"
+                          class="btn btn-link text-white p-0"
+                          id="chatPrefixBtn"
+                          title="Change chat prefix"
+                          aria-label="Change chat prefix"
+                        >
+                          <i class="bi bi-chat-left-quote"></i>
+                        </button>
+                        <div class="dropdown">
+                          <button
+                            type="button"
+                            class="btn btn-link text-white p-0 dropdown-toggle"
+                            id="chatRecipientBtn"
+                            data-bs-toggle="dropdown"
+                            aria-expanded="false"
+                            aria-label="Choose chat recipient"
+                          >
+                            <i class="bi bi-arrow-repeat"></i>
+                          </button>
+                          <ul class="dropdown-menu dropdown-menu-end chat-recipient-dropdown" id="chatRecipientDropdownMenu">
+                            <li>
+                              <button type="button" class="dropdown-item" data-recipient="@a">
+                                <i class="bi bi-at me-2"></i>Everyone
+                              </button>
+                            </li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li class="px-3 py-2 text-muted small" id="chatRecipientPlayersHint">No players online.</li>
+                            <div id="chatRecipientPlayersMenu"></div>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                    <div id="chatMessagesList" class="flex-fill overflow-auto px-3 py-2">
+                      <div class="text-muted small text-center mt-3">
+                        <i class="bi bi-chat-dots fs-1 opacity-50 d-block mb-2"></i>
+                        Nothing here... Send something!
+                      </div>
+                    </div>
+                    <div class="p-3 border-top border-secondary bg-dark">
+                      <div class="input-group">
+                        <input
+                          type="text"
+                          id="chatInput"
+                          class="form-control bg-dark border-secondary text-white"
+                          placeholder="Type a message..."
+                          autocomplete="off"
+                        />
+                        <button class="btn btn-secondary px-3" id="chatSendBtn" type="button">
+                          <i class="bi bi-send-fill"></i>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div
+                id="consoleOfflineMessage"
+                class="text-center text-muted d-none h-100 w-100 d-flex flex-column align-items-center justify-content-center gap-2"
+              >
+                <i class="bi bi-cloud-slash fs-1 d-block opacity-50"></i>
+                <div class="h5 mb-1">Server is offline</div>
+                <div>Start the server to view live logs.</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Server Properties Section -->

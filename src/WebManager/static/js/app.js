@@ -24,8 +24,36 @@ const STORAGE_KEYS = {
   sidebarCollapsed: "mcbsm.sidebarCollapsed",
   updateIntervalSec: "mcbsm.updateIntervalSec",
   lastSection: "mcbsm.lastSection",
+  commandHistory: "mcbsm.commandHistory",
 };
 const CHAT_STORAGE_KEY = "mcbsm.chatMessages";
+
+const MINECRAFT_COMMANDS = [
+  "ability", "alwaysday", "apple", "clear", "clone", "connect", "daylock", "deop", "diamond", "difficulty", "effect", "enchant",
+  "event", "execute", "fill", "fog", "function", "gamemode", "gamerule", "gametest", "give", "help", "immutableworld",
+  "iron_ingot", "kick", "kill", "list", "locate", "loot", "me", "mobevent", "msg", "music", "op", "ops", "particle", "playanimation",
+  "playsound", "reload", "replaceitem", "ride", "say", "scriptevent", "setblock", "setmaxplayers", "setworldspawn",
+  "spawnpoint", "spreadplayers", "steak", "stop", "stopsound", "structure", "summon", "tag", "teleport", "tell", "tellraw",
+  "testfor", "testforblock", "testforblocks", "tickingarea", "time", "title", "titleraw", "tp", "w", "wb", "weather",
+  "whitelist", "worldbuilder", "wsserver", "xp"
+].sort();
+
+const COMMON_SUBSTITUTIONS = [
+  { label: "time", value: "@!time", description: "Current server time" },
+  { label: "online_players", value: "@!online_players", description: "Count of online players" },
+  { label: "max_players", value: "@!max_players", description: "Server player limit" },
+  { label: "ip_local", value: "@!ip_local", description: "Local network IP" },
+  { label: "uptime", value: "@!uptime", description: "Server uptime duration" },
+];
+
+let commandHistory = [];
+try {
+  const storedHistory = localStorage.getItem(STORAGE_KEYS.commandHistory);
+  if (storedHistory) commandHistory = JSON.parse(storedHistory);
+} catch (e) {
+  commandHistory = [];
+}
+let historyIndex = -1;
 
 const MOTD_COLOR_MAP = {
   "0": "#000000",
@@ -55,6 +83,10 @@ const backupProgressModal = new bootstrap.Modal(document.getElementById("backupP
 const confirmModal = new bootstrap.Modal(document.getElementById("confirmModal"));
 const disconnectedModal = new bootstrap.Modal(document.getElementById("disconnectedModal"));
 const errorToast = new bootstrap.Toast(document.getElementById("errorToast"));
+const chatNotificationToastEl = document.getElementById("chatNotificationToast");
+const chatNotificationToast = chatNotificationToastEl ? new bootstrap.Toast(chatNotificationToastEl) : null;
+let chatPrefixModal = null;
+let chatPrefix = "";
 let backupProgressVisible = false;
 const pageLoadingOverlay = document.getElementById("page-loading-overlay");
 
@@ -63,9 +95,100 @@ function showError(msg) {
   errorToast.show();
 }
 
+function showToast(message, variant = "info") {
+  const text = String(message || "").trim();
+  if (!text) return;
+  const container = document.querySelector(".toast-container");
+  if (!container || typeof bootstrap === "undefined" || !bootstrap.Toast) return;
+
+  const bgClassByVariant = {
+    success: "text-bg-success",
+    info: "text-bg-primary",
+    warning: "text-bg-warning",
+    danger: "text-bg-danger",
+  };
+  const bgClass = bgClassByVariant[String(variant || "").toLowerCase()] || "text-bg-primary";
+
+  const toastEl = document.createElement("div");
+  toastEl.className = `toast align-items-center ${bgClass} border-0`;
+  toastEl.role = "alert";
+  toastEl.ariaLive = "assertive";
+  toastEl.ariaAtomic = "true";
+  toastEl.innerHTML = `
+    <div class="d-flex">
+      <div class="toast-body"></div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+    </div>
+  `;
+  toastEl.querySelector(".toast-body").textContent = text;
+  container.appendChild(toastEl);
+
+  const toast = new bootstrap.Toast(toastEl, { delay: 2500 });
+  toastEl.addEventListener("hidden.bs.toast", () => toastEl.remove(), { once: true });
+  toast.show();
+}
+
+function showConfirm(message, onConfirm, options = {}) {
+  const text = String(message || "").trim();
+  if (!text) return;
+  const title = String(options.title || "Confirm").trim() || "Confirm";
+  const confirmText = String(options.confirmText || "Confirm").trim() || "Confirm";
+  const confirmClass = String(options.confirmClass || "btn-primary").trim() || "btn-primary";
+  const inputOptions = options.input && typeof options.input === "object" ? options.input : null;
+
+  const titleEl = document.getElementById("confirmTitle");
+  const textEl = document.getElementById("confirmText");
+  const btn = document.getElementById("confirmActionBtn");
+  const inputWrapper = document.getElementById("confirmInputWrapper");
+  const inputLabel = document.getElementById("confirmInputLabel");
+  const inputEl = document.getElementById("confirmInput");
+  const inputHelp = document.getElementById("confirmInputHelp");
+  if (!titleEl || !textEl || !btn || !confirmModal) {
+    if (window.confirm(`${title}\n\n${text}`)) onConfirm?.();
+    return;
+  }
+
+  titleEl.textContent = title;
+  textEl.textContent = text;
+  btn.className = `btn ${confirmClass}`;
+  btn.textContent = confirmText;
+
+  if (inputWrapper && inputEl && inputLabel && inputHelp) {
+    if (inputOptions) {
+      inputWrapper.classList.remove("d-none");
+      inputLabel.textContent = String(inputOptions.label || "Reason").trim() || "Reason";
+      inputEl.value = String(inputOptions.value || "");
+      inputEl.placeholder = String(inputOptions.placeholder || "");
+      inputEl.maxLength = Number.isFinite(inputOptions.maxLength) ? inputOptions.maxLength : 0;
+      if (inputEl.maxLength <= 0) inputEl.removeAttribute("maxlength");
+      inputEl.required = Boolean(inputOptions.required);
+      inputHelp.textContent = String(inputOptions.help || "");
+      setTimeout(() => inputEl.focus(), 50);
+    } else {
+      inputWrapper.classList.add("d-none");
+      inputLabel.textContent = "";
+      inputEl.value = "";
+      inputEl.placeholder = "";
+      inputEl.required = false;
+      inputHelp.textContent = "";
+    }
+  }
+
+  btn.onclick = async () => {
+    try {
+      const inputValue = inputOptions && inputEl ? String(inputEl.value || "") : null;
+      await onConfirm?.(inputValue);
+    } finally {
+      confirmModal.hide();
+    }
+  };
+  confirmModal.show();
+}
+
 // Selectors
 const sidebarToggle = document.getElementById("menu-toggle");
 const wrapper = document.getElementById("wrapper");
+const sidebarBackdrop = document.getElementById("sidebarBackdrop");
 const toggleServerBtn = document.getElementById("toggleServerBtn");
 const refreshBtn = document.getElementById("refreshBtn");
 const reconnectBtn = document.getElementById("reconnectBtn");
@@ -103,17 +226,22 @@ const quickMacroTriggerSelect = document.getElementById("quickMacroTrigger");
 const quickMacroIntervalInput = document.getElementById("quickMacroInterval");
 const quickMacroKeywordWrapper = document.getElementById("quickMacroKeywordWrapper");
 const quickMacroKeywordInput = document.getElementById("quickMacroKeyword");
+const quickMacroTimeWrapper = document.getElementById("quickMacroTimeWrapper");
+const quickMacroTimeInput = document.getElementById("quickMacroTime");
 const quickMacroIdInput = document.getElementById("quickMacroId");
 const quickMacroDeleteBtn = document.getElementById("quickMacroDeleteBtn");
+const quickMacroOutputBtn = document.getElementById("quickMacroOutputBtn");
 const quickMacroTriggerBtn = document.getElementById("openQuickMacroModalBtn");
 const presetMacroGrid = document.getElementById("presetMacroGrid");
 const exportMacrosBtn = document.getElementById("exportMacrosBtn");
 const importMacrosBtn = document.getElementById("importMacrosBtn");
 const importMacrosFile = document.getElementById("importMacrosFile");
+const openMacroVarsBtn = document.getElementById("openMacroVarsBtn");
 const propertyModalTitle = document.getElementById("propertyModalTitle");
 const propKeyInput = document.getElementById("propKey");
 const propValueInput = document.getElementById("propValue");
 const newPropertyBtn = document.getElementById("newPropertyBtn");
+const consoleOnlineLayout = document.getElementById("consoleOnlineLayout");
 const consoleOfflineMessage = document.getElementById("consoleOfflineMessage");
 const chatMessagesList = document.getElementById("chatMessagesList");
 const chatRecipientLabel = document.getElementById("chatRecipientLabel");
@@ -126,10 +254,12 @@ const chatSendBtn = document.getElementById("chatSendBtn");
 const chatPanel = document.getElementById("chatPanel");
 const toolboxSendEveryoneBtn = document.getElementById("toolboxSendEveryoneBtn");
 const toolboxCopyBtn = document.getElementById("toolboxCopyBtn");
-const toolboxCopyToggleBtn = document.getElementById("toolboxCopyToggleBtn");
 const toolboxCopyLabel = document.getElementById("toolboxCopyLabel");
 const toolboxCopyDropdownMenu = document.getElementById("toolboxCopyDropdownMenu");
 const resourceUsageRow = document.getElementById("resourceUsageRow");
+const openHistoricalPerfBtn = document.getElementById("openHistoricalPerfBtn");
+const historicalPerfModalEl = document.getElementById("historicalPerfModal");
+const historicalPerfModal = historicalPerfModalEl ? new bootstrap.Modal(historicalPerfModalEl) : null;
 const cpuVBar = document.getElementById("cpuVBar");
 
 const macroOutputModalEl = document.getElementById("macroOutputModal");
@@ -145,12 +275,55 @@ const memUsageText = document.getElementById("memUsageText");
 const memRssText = document.getElementById("memRssText");
 const cpuChart = document.getElementById("cpuChart");
 const memChart = document.getElementById("memChart");
+const cpuHistoryChart = document.getElementById("cpuHistoryChart");
+const memHistoryChart = document.getElementById("memHistoryChart");
+let hasHistoricalPerformance = false;
+
+const teleportModalEl = document.getElementById("teleportModal");
+const teleportModal = teleportModalEl ? new bootstrap.Modal(teleportModalEl) : null;
+const tpSourcePlayer = document.getElementById("tpSourcePlayer");
+const tpCustomSelector = document.getElementById("tpCustomSelector");
+const tpPlayerList = document.getElementById("tpPlayerList");
+const confirmTpBtn = document.getElementById("confirmTpBtn");
+
+const giveModalEl = document.getElementById("giveModal");
+const giveModal = giveModalEl ? new bootstrap.Modal(giveModalEl) : null;
+const giveTargetPlayer = document.getElementById("giveTargetPlayer");
+const giveItemName = document.getElementById("giveItemName");
+const giveItemMentionPopup = document.getElementById("giveItemMentionPopup");
+const giveItemMentionList = document.getElementById("giveItemMentionList");
+const giveItemAmount = document.getElementById("giveItemAmount");
+const confirmGiveBtn = document.getElementById("confirmGiveBtn");
+
+const spawnMobModalEl = document.getElementById("spawnMobModal");
+const spawnMobModal = spawnMobModalEl ? new bootstrap.Modal(spawnMobModalEl) : null;
+const spawnMobTargetPlayer = document.getElementById("spawnMobTargetPlayer");
+const spawnMobName = document.getElementById("spawnMobName");
+const spawnMobCount = document.getElementById("spawnMobCount");
+const confirmSpawnMobBtn = document.getElementById("confirmSpawnMobBtn");
+const spawnMobMentionPopup = document.getElementById("spawnMobMentionPopup");
+const spawnMobMentionList = document.getElementById("spawnMobMentionList");
+
 let quickMacros = [];
 let presetMacros = [];
+let macroVariables = [];
+let macrosRefreshInFlight = false;
+let lastMacrosRefreshAt = 0;
+
+const STORAGE_SPLIT_KEYS = {
+  consoleSplitDesktopPct: "mcbsm.consoleSplitDesktopPct",
+  consoleSplitMobilePct: "mcbsm.consoleSplitMobilePct",
+  consoleMobileTab: "mcbsm.consoleMobileTab",
+};
 const CHAT_MESSAGE_LIMIT = 120;
 const CHAT_LOG_TAIL_FALLBACK = 20;
 let chatRecipient = { id: "@a", label: "Everyone", icon: "bi-at" };
-const chatMessages = [];
+let chatMessages = [];
+
+// Global variables for player actions
+let _currentPlayerTarget = null;
+let _allActivePlayers = [];
+
 let lastAnimatedChatUid = null;
 const CPU_HISTORY_LIMIT = 60;
 const MEM_HISTORY_LIMIT = 60;
@@ -158,7 +331,6 @@ const cpuHistory = [];
 const memHistory = [];
 let previousServerRunning = null;
 let toolboxCopyType = "say";
-let toolboxCopyFeedbackTimer = null;
 
 function toggleSidebar() {
   wrapper.classList.toggle("toggled");
@@ -167,10 +339,23 @@ function toggleSidebar() {
   } catch (_e) {}
 }
 
+function initSidebarBackdrop() {
+  if (!sidebarBackdrop || !wrapper) return;
+  sidebarBackdrop.addEventListener("click", () => {
+    if (window.innerWidth >= 768) return;
+    if (wrapper.classList.contains("toggled")) wrapper.classList.remove("toggled");
+  });
+}
+
 function showSection(section) {
   currentSection = section;
   document.querySelectorAll("section").forEach((s) => s.classList.add("d-none"));
   document.getElementById(`section-${section}`).classList.remove("d-none");
+
+  // Hide chat notification if we navigate to the chat tab
+  if (section === "dashboard" && chatNotificationToast) {
+    chatNotificationToast.hide();
+  }
 
   document.querySelectorAll(".nav-link").forEach((l) => {
     l.classList.remove("active");
@@ -203,9 +388,12 @@ function handleFetchError(err) {
   }
 }
 
-async function sendCommand(action, data = null) {
-  if (isRequestInFlight) return;
-  isRequestInFlight = true;
+async function sendCommand(action, data = null, options = {}) {
+  // Only lock for major state-changing actions like start/stop, not for generic commands (chat)
+  const needsLock = action === "start_server" || action === "stop_server";
+  if (needsLock && isRequestInFlight) return;
+  if (needsLock) isRequestInFlight = true;
+  
   let shouldRefresh = false;
 
   if (action === "start_server") {
@@ -225,28 +413,46 @@ async function sendCommand(action, data = null) {
       showError(result.error);
       throw new Error(result.error || "Server response error");
     }
-    if (result.success) {
+    if (result.success && !options.skipRefresh) {
       shouldRefresh = true;
     }
     return result.result;
   } catch (err) {
     handleFetchError(err);
   } finally {
-    isRequestInFlight = false;
+    if (needsLock) isRequestInFlight = false;
     if (shouldRefresh) refreshStatus();
   }
 }
 
-async function sendServerCommand(command) {
+async function sendServerCommand(command, options = {}) {
   const trimmed = String(command || "").trim();
   if (!trimmed) return;
-  return sendCommand("send_command", { command: trimmed });
+  return sendCommand("send_command", { command: trimmed }, options);
 }
 
 async function sendServerCommands(commands) {
   for (const cmd of (commands || []).map((c) => String(c || "").trim()).filter(Boolean)) {
     await sendServerCommand(cmd);
   }
+}
+
+function quoteMinecraftArg(value) {
+  const v = String(value ?? "");
+  return `"${v.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+function formatTeleportTarget(targetSelectorRaw) {
+  const targetSelector = String(targetSelectorRaw || "").trim();
+  if (!targetSelector) return "";
+  if (targetSelector.startsWith("@")) return targetSelector;
+
+  // Coordinates like: 0 64 0, ~ ~1 ~, ^ ^ ^1.5
+  const coordToken = "[~^]?-?\\d*(?:\\.\\d+)?";
+  const coordsRe = new RegExp(`^${coordToken}\\s+${coordToken}\\s+${coordToken}$`);
+  if (coordsRe.test(targetSelector)) return targetSelector;
+
+  return quoteMinecraftArg(targetSelector);
 }
 
 function downloadJson(filename, obj) {
@@ -328,6 +534,17 @@ async function refreshStatus() {
     }
 
     updateUI(data);
+
+    if (currentSection === "macros") {
+      const now = Date.now();
+      if (!macrosRefreshInFlight && now - lastMacrosRefreshAt >= 5000) {
+        macrosRefreshInFlight = true;
+        lastMacrosRefreshAt = now;
+        fetchQuickMacros().finally(() => {
+          macrosRefreshInFlight = false;
+        });
+      }
+    }
   } catch (err) {
     handleFetchError(err);
   } finally {
@@ -373,6 +590,7 @@ function updateUI(data) {
   const web = data.web_manager || {};
   const players = data.players || [];
   mentionPlayers = Array.isArray(players) ? players.map((p) => String(p || "").trim()).filter(Boolean) : [];
+  _allActivePlayers = mentionPlayers;
   const teams = data.teams || data.scoreboard_teams || [];
   mentionTeams = Array.isArray(teams) ? teams.map((t) => String(t || "").trim()).filter(Boolean) : [];
   const operators = new Set(data.operators || []);
@@ -435,29 +653,30 @@ function updateUI(data) {
         resourceUsageRow.classList.add("d-none");
       }, 300);
     }
+  }
 
-    const cpu = Number(bedrock.cpu_percent);
-    const mem = Number(bedrock.mem_percent);
-    const rssBytes = Number(bedrock.mem_rss_bytes);
-    if (isServerRunning && Number.isFinite(cpu) && Number.isFinite(mem)) {
-      pushMetric(cpuHistory, cpu, CPU_HISTORY_LIMIT);
-      pushMetric(memHistory, mem, MEM_HISTORY_LIMIT);
-      renderResourceCharts();
-      if (cpuUsageText) cpuUsageText.textContent = Math.max(0, Math.round(cpu)).toString();
-      if (memUsageText) memUsageText.textContent = Math.max(0, Math.round(mem)).toString();
-      if (cpuVBar) cpuVBar.style.height = `${Math.min(100, Math.max(0, cpu))}%`;
-      if (memVBar) memVBar.style.height = `${Math.min(100, Math.max(0, mem))}%`;
-      if (memRssText) memRssText.textContent = Number.isFinite(rssBytes) && rssBytes > 0 ? `${formatBytes(rssBytes)} RSS` : "-";
-    } else if (!isServerRunning) {
-      cpuHistory.length = 0;
-      memHistory.length = 0;
-      renderResourceCharts(true);
-      if (cpuUsageText) cpuUsageText.textContent = "-";
-      if (memUsageText) memUsageText.textContent = "-";
-      if (cpuVBar) cpuVBar.style.height = "0%";
-      if (memVBar) memVBar.style.height = "0%";
-      if (memRssText) memRssText.textContent = "-";
-    }
+  const cpu = Number(bedrock.cpu_percent);
+  const mem = Number(bedrock.mem_percent);
+  const rssBytes = Number(bedrock.mem_rss_bytes);
+  if (isServerRunning && Number.isFinite(cpu) && Number.isFinite(mem)) {
+    pushMetric(cpuHistory, cpu, CPU_HISTORY_LIMIT);
+    pushMetric(memHistory, mem, MEM_HISTORY_LIMIT);
+    renderResourceCharts();
+    renderHistoricalCharts(data.resource_history);
+    if (cpuUsageText) cpuUsageText.textContent = Math.max(0, Math.round(cpu)).toString();
+    if (memUsageText) memUsageText.textContent = Math.max(0, Math.round(mem)).toString();
+    if (cpuVBar) cpuVBar.style.height = `${Math.min(100, Math.max(0, cpu))}%`;
+    if (memVBar) memVBar.style.height = `${Math.min(100, Math.max(0, mem))}%`;
+    if (memRssText) memRssText.textContent = Number.isFinite(rssBytes) && rssBytes > 0 ? `${formatBytes(rssBytes)} RSS` : "-";
+  } else if (!isServerRunning) {
+    cpuHistory.length = 0;
+    memHistory.length = 0;
+    renderResourceCharts(true);
+    if (cpuUsageText) cpuUsageText.textContent = "-";
+    if (memUsageText) memUsageText.textContent = "-";
+    if (cpuVBar) cpuVBar.style.height = "0%";
+    if (memVBar) memVBar.style.height = "0%";
+    if (memRssText) memRssText.textContent = "-";
   }
 
   if (isServerRunning) {
@@ -545,10 +764,13 @@ function updateUI(data) {
     ingestChatFromLogs(logs);
     const logsText = logs.join("");
     if (logsText !== lastLogs) {
+      const isAtBottom = serverLogs.scrollHeight - serverLogs.scrollTop <= serverLogs.clientHeight + 100;
       serverLogs.innerText = logsText;
-      requestAnimationFrame(() => {
-        serverLogs.scrollTop = serverLogs.scrollHeight;
-      });
+      if (isAtBottom) {
+        requestAnimationFrame(() => {
+          serverLogs.scrollTop = serverLogs.scrollHeight;
+        });
+      }
       lastLogs = logsText;
     }
   } else {
@@ -582,6 +804,9 @@ function updateUI(data) {
   if (consoleOfflineMessage) {
     consoleOfflineMessage.classList.toggle("d-none", isServerRunning);
   }
+  if (consoleOnlineLayout) {
+    consoleOnlineLayout.classList.toggle("d-none", !isServerRunning);
+  }
   if (chatInput) chatInput.disabled = !isServerRunning;
   if (chatSendBtn) chatSendBtn.disabled = !isServerRunning;
   if (chatRecipientBtn) chatRecipientBtn.disabled = !isServerRunning;
@@ -595,12 +820,89 @@ function updateUI(data) {
     players.forEach((p) => {
       const isOp = operators.has(p);
       const li = document.createElement("li");
-      li.className = "list-group-item bg-transparent border-secondary d-flex align-items-center";
-      li.innerHTML = `
-        <i class="bi bi-person-fill me-2 text-primary"></i>
-        <span class="flex-grow-1">${p}</span>
-        ${isOp ? '<span class="badge text-bg-warning text-dark ms-2">OP</span>' : ""}
+      li.className = "list-group-item bg-transparent border-secondary d-flex align-items-center py-2 gap-2";
+
+      const icon = document.createElement("i");
+      icon.className = "bi bi-person-fill text-primary";
+      li.appendChild(icon);
+
+      const info = document.createElement("div");
+      info.className = "flex-grow-1 min-w-0";
+
+      const nameWrap = document.createElement("div");
+      nameWrap.className = "d-flex align-items-center gap-2";
+      const nameEl = document.createElement("span");
+      nameEl.className = "fw-semibold text-truncate";
+      nameEl.title = p;
+      nameEl.textContent = p;
+      nameWrap.appendChild(nameEl);
+      if (isOp) {
+        const badge = document.createElement("span");
+        badge.className = "badge text-bg-warning text-dark";
+        badge.style.fontSize = "0.65rem";
+        badge.textContent = "OP";
+        nameWrap.appendChild(badge);
+      }
+      info.appendChild(nameWrap);
+      li.appendChild(info);
+
+      const actions = document.createElement("div");
+      actions.className = "d-flex align-items-center gap-1 flex-wrap justify-content-end";
+
+      const actionDefs = [
+        { action: "kick", title: "Kick", icon: "bi-door-open", btnClass: "btn-outline-warning" },
+        { action: "ban", title: "Ban", icon: "bi-hammer", btnClass: "btn-outline-danger" },
+        { action: "tp", title: "Teleport", icon: "bi-geo-alt", btnClass: "btn-outline-info" },
+        { action: "give", title: "Give", icon: "bi-gift", btnClass: "btn-outline-info" },
+      ];
+
+      actionDefs.forEach((def) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `btn btn-sm ${def.btnClass}`;
+        btn.title = def.title;
+        btn.dataset.player = p;
+        btn.dataset.playerAction = def.action;
+        btn.disabled = Boolean(def.disabled);
+        btn.innerHTML = `<i class="bi ${def.icon}"></i><span class="d-none d-lg-inline ms-1">${def.title}</span>`;
+        actions.appendChild(btn);
+      });
+
+      const menuWrap = document.createElement("div");
+      menuWrap.className = "dropdown";
+      const menuBtn = document.createElement("button");
+      menuBtn.type = "button";
+      menuBtn.className = "btn btn-sm btn-outline-light";
+      menuBtn.title = "More actions";
+      menuBtn.setAttribute("data-bs-toggle", "dropdown");
+      menuBtn.setAttribute("aria-expanded", "false");
+      menuBtn.innerHTML = '<i class="bi bi-three-dots-vertical"></i>';
+      menuWrap.appendChild(menuBtn);
+
+      const menu = document.createElement("ul");
+      menu.className = "dropdown-menu dropdown-menu-end shadow-lg border-secondary";
+      menu.innerHTML = `
+        <li><h6 class="dropdown-header small text-uppercase">Actions</h6></li>
+        <li>
+          <button type="button" class="dropdown-item py-1" data-player="${p}" data-player-action="op" ${isOp ? "disabled" : ""}>
+            <i class="bi bi-shield-check me-2 text-success"></i>Promote to OP
+          </button>
+        </li>
+        <li>
+          <button type="button" class="dropdown-item py-1" data-player="${p}" data-player-action="spawn_at">
+            <i class="bi bi-geo-alt me-2 text-info"></i>Set world spawn here
+          </button>
+        </li>
+        <li>
+          <button type="button" class="dropdown-item py-1" data-player="${p}" data-player-action="spawn_mob_at">
+            <i class="bi bi-bug me-2 text-warning"></i>Spawn mob(s) at player…
+          </button>
+        </li>
       `;
+      menuWrap.appendChild(menu);
+      actions.appendChild(menuWrap);
+
+      li.appendChild(actions);
       playerList.appendChild(li);
     });
   } else {
@@ -647,30 +949,15 @@ function initCommandMentions() {
   let replaceEnd = null;
 
   const SELECTOR_BASE_ITEMS = [
-    { label: "@a (all players)", value: "@a" },
-    { label: "@p (nearest player)", value: "@p" },
-    { label: "@r (random player)", value: "@r" },
-    { label: "@s (self)", value: "@s" },
-    { label: "@e (all entities)", value: "@e" },
+    { label: "@a", value: "@a", description: "all players" },
+    { label: "@p", value: "@p", description: "nearest player" },
+    { label: "@r", value: "@r", description: "random player" },
+    { label: "@s", value: "@s", description: "self" },
+    { label: "@e", value: "@e", description: "all entities" },
   ];
 
   const SELECTOR_KEYS_COMMON = [
-    "name",
-    "r",
-    "rm",
-    "x",
-    "y",
-    "z",
-    "dx",
-    "dy",
-    "dz",
-    "c",
-    "l",
-    "lm",
-    "m",
-    "tag",
-    "team",
-    "gamemode",
+    "name", "r", "rm", "x", "y", "z", "dx", "dy", "dz", "c", "l", "lm", "m", "tag", "team", "gamemode",
   ];
   const SELECTOR_KEYS_ENTITY = ["type", "family"].concat(SELECTOR_KEYS_COMMON);
   const GAMEMODE_VALUES = ["survival", "creative", "adventure", "spectator", "0", "1", "2", "3"];
@@ -692,56 +979,99 @@ function initCommandMentions() {
     items.forEach((item, idx) => {
       const el = document.createElement("button");
       el.type = "button";
-      el.className = `list-group-item list-group-item-action ${idx === activeIndex ? "active" : ""}`;
-      el.textContent = item.label;
+      el.className = `list-group-item list-group-item-action d-flex align-items-center justify-content-between ${idx === activeIndex ? "active" : ""}`;
+      
+      const content = document.createElement("div");
+      content.innerHTML = item.html || item.label;
+      el.appendChild(content);
+
+      if (item.description) {
+        const desc = document.createElement("span");
+        desc.className = "ms-2 small opacity-50 text-white-50";
+        desc.textContent = item.description;
+        el.appendChild(desc);
+      }
+
       el.dataset.value = item.value;
       el.onclick = () => applySelection(item.value);
       commandMentionList.appendChild(el);
     });
   }
 
+  function getSubstitutionValue(tag) {
+    if (tag === "@!time") return new Date().toLocaleTimeString([], { hour12: false });
+    if (tag === "@!online_players") return String(mentionPlayers.length || 0);
+    if (tag === "@!max_players") return document.getElementById("playerLimit")?.textContent?.replace("Max: ", "") || "20";
+    if (tag === "@!ip_local") return document.getElementById("localIp")?.textContent || "127.0.0.1";
+    if (tag === "@!uptime") return document.getElementById("serverUptime")?.textContent || "00:00:00";
+    return tag;
+  }
+
   function applySelection(value) {
     const text = commandInput.value || "";
-    const cursor = typeof commandInput.selectionStart === "number" ? commandInput.selectionStart : text.length;
     const startIndex = typeof replaceStart === "number" ? replaceStart : null;
     const endIndex = typeof replaceEnd === "number" ? replaceEnd : null;
     if (startIndex === null || endIndex === null || startIndex < 0 || endIndex < startIndex) return;
+    
+    // Resolve substitution if needed
+    const resolvedValue = value.startsWith("@!") ? getSubstitutionValue(value) : value;
+
     const before = text.slice(0, startIndex);
     const after = text.slice(endIndex);
-    const next = `${before}${value}${after}`;
+    const next = `${before}${resolvedValue}${after}`;
     commandInput.value = next;
-    const newCursor = before.length + value.length;
+    const newCursor = before.length + resolvedValue.length;
     commandInput.setSelectionRange(newCursor, newCursor);
     hidePopup();
     commandInput.focus();
   }
 
-  function selectorKeyListForBase(base) {
-    if (base === "@e") return SELECTOR_KEYS_ENTITY;
-    return SELECTOR_KEYS_COMMON;
+  function getTokenAtCursor(text, cursor) {
+    const safeCursor = Math.max(0, Math.min(text.length, cursor));
+    const left = text.slice(0, safeCursor);
+    const lastWs = Math.max(left.lastIndexOf(" "), left.lastIndexOf("\n"), left.lastIndexOf("\t"));
+    const start = lastWs < 0 ? 0 : lastWs + 1;
+    return { start, end: safeCursor, token: text.slice(start, safeCursor) };
   }
 
-  function normalizeSelectorBase(base) {
-    const b = String(base || "").trim();
-    if (!b.startsWith("@")) return null;
-    if (/^@[apres]$/.test(b)) return b;
-    return null;
+  function buildItemsForCommandQuery(query) {
+    const q = String(query || "").toLowerCase();
+    return MINECRAFT_COMMANDS
+      .filter((cmd) => cmd.startsWith(q))
+      .map((cmd) => ({
+        label: cmd,
+        html: `<i class="bi bi-terminal me-2"></i><strong>${cmd.slice(0, q.length)}</strong>${cmd.slice(q.length)}`,
+        value: cmd
+      }));
+  }
+
+  function buildItemsForSubstitutionQuery(query) {
+    const q = String(query || "").toLowerCase();
+    return COMMON_SUBSTITUTIONS
+      .filter((s) => s.label.toLowerCase().startsWith(q))
+      .map((s) => ({
+        label: s.label,
+        description: s.description,
+        html: `<i class="bi bi-magic me-2"></i><strong>${s.label.slice(0, q.length)}</strong>${s.label.slice(q.length)}`,
+        value: s.value
+      }));
   }
 
   function buildItemsForSelectorBaseQuery(query) {
     const q = String(query || "").toLowerCase();
     const items = [];
-    items.push(...SELECTOR_BASE_ITEMS.filter((it) => it.value.toLowerCase().startsWith(`@${q}`)));
+    items.push(...SELECTOR_BASE_ITEMS.filter((it) => it.value.toLowerCase().startsWith(`@${q}`)).map(it => ({...it})));
     const filteredPlayers = mentionPlayers.filter((name) => name.toLowerCase().includes(q));
     filteredPlayers.slice(0, 15).forEach((name) => {
-      const selector = `@p[name=${JSON.stringify(name)}]`;
-      items.push({ label: `Player: ${name}`, value: selector });
+      const formattedName = name.includes(" ") ? JSON.stringify(name) : name;
+      const selector = `@p[name=${formattedName}]`;
+      items.push({ label: name, description: "Player", value: selector });
     });
     return items;
   }
 
   function buildItemsForSelectorArgKey(base, keyPrefix) {
-    const keys = selectorKeyListForBase(base);
+    const keys = base === "@e" ? SELECTOR_KEYS_ENTITY : SELECTOR_KEYS_COMMON;
     const q = String(keyPrefix || "").toLowerCase();
     return keys
       .filter((k) => k.toLowerCase().startsWith(q))
@@ -755,10 +1085,10 @@ function initCommandMentions() {
       return mentionPlayers
         .filter((n) => n.toLowerCase().includes(q))
         .slice(0, 15)
-        .map((n) => ({ label: n, value: JSON.stringify(n) }));
+        .map((n) => ({ label: n, value: n.includes(" ") ? JSON.stringify(n) : n }));
     }
     if (k === "team") {
-      return mentionTeams
+      return (mentionTeams || [])
         .filter((t) => t.toLowerCase().includes(q))
         .slice(0, 15)
         .map((t) => ({ label: t, value: JSON.stringify(t) }));
@@ -773,24 +1103,46 @@ function initCommandMentions() {
     return [];
   }
 
-  function getTokenAtCursor(text, cursor) {
-    const safeCursor = Math.max(0, Math.min(text.length, cursor));
-    const left = text.slice(0, safeCursor);
-    const lastWs = Math.max(left.lastIndexOf(" "), left.lastIndexOf("\n"), left.lastIndexOf("\t"));
-    const start = lastWs < 0 ? 0 : lastWs + 1;
-    return { start, end: safeCursor, token: text.slice(start, safeCursor) };
+  function normalizeSelectorBase(base) {
+    const b = String(base || "").trim();
+    if (!b.startsWith("@")) return null;
+    if (/^@[apres]$/.test(b)) return b;
+    return null;
   }
 
   function updatePopupFromInput() {
     const text = commandInput.value || "";
     const cursor = typeof commandInput.selectionStart === "number" ? commandInput.selectionStart : text.length;
     const { start, token } = getTokenAtCursor(text, cursor);
+
+    // Command suggestions (first token)
+    if (start === 0 && !token.startsWith("@") && token.length > 0) {
+      replaceStart = 0;
+      replaceEnd = cursor;
+      const items = buildItemsForCommandQuery(token);
+      if (items.length === 0) return hidePopup();
+      renderList(items);
+      showPopup();
+      return;
+    }
+
+    // Common Substitutions (@!)
+    if (token.startsWith("@!")) {
+      const query = token.slice(2);
+      replaceStart = start;
+      replaceEnd = cursor;
+      const items = buildItemsForSubstitutionQuery(query);
+      if (items.length === 0) return hidePopup();
+      renderList(items);
+      showPopup();
+      return;
+    }
+
     const atIndex = token.lastIndexOf("@");
     if (atIndex < 0) return hidePopup();
     const absAtIndex = start + atIndex;
     const fragment = text.slice(absAtIndex, cursor);
 
-    // Base selector / player mention mode: "@", "@a", "@pla", etc. (no brackets yet)
     if (!fragment.includes("[") && !fragment.includes("]")) {
       const query = fragment.slice(1);
       if (/\s/.test(query)) return hidePopup();
@@ -798,13 +1150,11 @@ function initCommandMentions() {
       replaceEnd = cursor;
       const items = buildItemsForSelectorBaseQuery(query);
       if (items.length === 0) return hidePopup();
-      activeIndex = Math.max(0, Math.min(activeIndex, items.length - 1));
       renderList(items);
       showPopup();
       return;
     }
 
-    // Selector argument mode: "@a[...<cursor>" (must be inside an unclosed bracket)
     const openIdx = fragment.indexOf("[");
     const closeIdx = fragment.indexOf("]");
     if (openIdx < 0 || (closeIdx >= 0 && closeIdx < fragment.length - 1)) return hidePopup();
@@ -812,7 +1162,7 @@ function initCommandMentions() {
     const base = normalizeSelectorBase(baseRaw);
     if (!base) return hidePopup();
 
-    const inside = fragment.slice(openIdx + 1); // no closing bracket
+    const inside = fragment.slice(openIdx + 1);
     const lastComma = inside.lastIndexOf(",");
     const partStart = lastComma >= 0 ? lastComma + 1 : 0;
     const part = inside.slice(partStart);
@@ -824,7 +1174,6 @@ function initCommandMentions() {
       replaceEnd = cursor;
       const items = buildItemsForSelectorArgKey(base, keyPrefix);
       if (items.length === 0) return hidePopup();
-      activeIndex = Math.max(0, Math.min(activeIndex, items.length - 1));
       renderList(items);
       showPopup();
       return;
@@ -836,7 +1185,6 @@ function initCommandMentions() {
     replaceEnd = cursor;
     const items = buildItemsForSelectorArgValue(base, key, valuePrefix);
     if (items.length === 0) return hidePopup();
-    activeIndex = Math.max(0, Math.min(activeIndex, items.length - 1));
     renderList(items);
     showPopup();
   }
@@ -847,38 +1195,285 @@ function initCommandMentions() {
   });
 
   commandInput.addEventListener("keydown", (e) => {
-    if (commandMentionPopup.classList.contains("d-none")) return;
-    const items = Array.from(commandMentionList.querySelectorAll("[data-value]"));
-    if (e.key === "Escape") {
+    const isPopupVisible = !commandMentionPopup.classList.contains("d-none");
+    if (e.key === "Escape" && isPopupVisible) {
       e.preventDefault();
       e.stopImmediatePropagation();
       hidePopup();
       return;
     }
-    if (e.key === "ArrowDown") {
+    if (e.key === "Tab" && isPopupVisible) {
       e.preventDefault();
       e.stopImmediatePropagation();
-      activeIndex = Math.min(items.length - 1, activeIndex + 1);
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      activeIndex = Math.max(0, activeIndex - 1);
-    } else if (e.key === "Enter") {
+      const items = Array.from(commandMentionList.querySelectorAll("[data-value]"));
       const el = items[activeIndex];
-      if (!el) return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      applySelection(el.dataset.value);
-      return;
-    } else {
+      if (el) applySelection(el.dataset.value);
       return;
     }
-    items.forEach((el, idx) => el.classList.toggle("active", idx === activeIndex));
-    items[activeIndex]?.scrollIntoView({ block: "nearest" });
+    if (e.key === "ArrowDown") {
+      if (isPopupVisible) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const items = Array.from(commandMentionList.querySelectorAll("[data-value]"));
+        activeIndex = Math.min(items.length - 1, activeIndex + 1);
+        items.forEach((el, idx) => el.classList.toggle("active", idx === activeIndex));
+        items[activeIndex]?.scrollIntoView({ block: "nearest" });
+      } else {
+        // History Down
+        if (historyIndex > -1) {
+          e.preventDefault();
+          historyIndex -= 1;
+          commandInput.value = historyIndex === -1 ? "" : commandHistory[historyIndex];
+          setTimeout(() => commandInput.setSelectionRange(commandInput.value.length, commandInput.value.length), 0);
+        }
+      }
+    } else if (e.key === "ArrowUp") {
+      if (isPopupVisible) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const items = Array.from(commandMentionList.querySelectorAll("[data-value]"));
+        activeIndex = Math.max(0, activeIndex - 1);
+        items.forEach((el, idx) => el.classList.toggle("active", idx === activeIndex));
+        items[activeIndex]?.scrollIntoView({ block: "nearest" });
+      } else {
+        // History Up
+        if (historyIndex < commandHistory.length - 1) {
+          e.preventDefault();
+          historyIndex += 1;
+          commandInput.value = commandHistory[historyIndex];
+          setTimeout(() => commandInput.setSelectionRange(commandInput.value.length, commandInput.value.length), 0);
+        }
+      }
+    } else if (e.key === "Enter") {
+      if (isPopupVisible) {
+        const items = Array.from(commandMentionList.querySelectorAll("[data-value]"));
+        const el = items[activeIndex];
+        if (el) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          applySelection(el.dataset.value);
+        }
+      }
+    }
   });
 
   commandInput.addEventListener("blur", () => {
     setTimeout(() => hidePopup(), 120);
+  });
+}
+
+function initSpawnMobMentions() {
+  if (!spawnMobName || !spawnMobMentionPopup || !spawnMobMentionList) return;
+
+  let activeIndex = 0;
+
+  const MOB_SUGGESTIONS = Array.isArray(window.MinecraftSuggestions?.mobs) ? window.MinecraftSuggestions.mobs : [];
+
+  function hidePopup() {
+    spawnMobMentionPopup.classList.add("d-none");
+    spawnMobMentionList.innerHTML = "";
+    activeIndex = 0;
+  }
+
+  function showPopup() {
+    spawnMobMentionPopup.classList.remove("d-none");
+  }
+
+  function applySelection(value) {
+    spawnMobName.value = value;
+    spawnMobName.setSelectionRange(value.length, value.length);
+    hidePopup();
+    spawnMobName.focus();
+  }
+
+  function renderList(items, query) {
+    const q = String(query || "");
+    spawnMobMentionList.innerHTML = "";
+    items.forEach((mobId, idx) => {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = `list-group-item list-group-item-action d-flex align-items-center justify-content-between ${idx === activeIndex ? "active" : ""}`;
+      const safe = String(mobId);
+      const prefixLen = q && safe.toLowerCase().startsWith(q.toLowerCase()) ? q.length : 0;
+      el.innerHTML = `<div><i class="bi bi-bug me-2"></i>${prefixLen ? `<strong>${safe.slice(0, prefixLen)}</strong>${safe.slice(prefixLen)}` : safe}</div>`;
+      el.dataset.value = safe;
+      el.onclick = () => applySelection(safe);
+      spawnMobMentionList.appendChild(el);
+    });
+  }
+
+  function updatePopupFromInput() {
+    const raw = String(spawnMobName.value || "").trim();
+    const q = raw.toLowerCase();
+
+    const items = (q ? MOB_SUGGESTIONS.filter((m) => m.toLowerCase().includes(q)) : MOB_SUGGESTIONS.slice(0))
+      .slice(0, 15);
+
+    if (items.length === 0) return hidePopup();
+    renderList(items, raw);
+    showPopup();
+  }
+
+  spawnMobName.addEventListener("input", () => {
+    activeIndex = 0;
+    updatePopupFromInput();
+  });
+
+  spawnMobName.addEventListener("focus", () => {
+    activeIndex = 0;
+    updatePopupFromInput();
+  });
+
+  spawnMobName.addEventListener("keydown", (e) => {
+    const isPopupVisible = !spawnMobMentionPopup.classList.contains("d-none");
+    if (e.key === "Escape" && isPopupVisible) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      hidePopup();
+      return;
+    }
+    if ((e.key === "Tab" || e.key === "Enter") && isPopupVisible) {
+      const items = Array.from(spawnMobMentionList.querySelectorAll("[data-value]"));
+      const el = items[activeIndex];
+      if (el) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        applySelection(el.dataset.value);
+      }
+      return;
+    }
+    if (e.key === "ArrowDown" && isPopupVisible) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const items = Array.from(spawnMobMentionList.querySelectorAll("[data-value]"));
+      activeIndex = Math.min(items.length - 1, activeIndex + 1);
+      items.forEach((el, idx) => el.classList.toggle("active", idx === activeIndex));
+      items[activeIndex]?.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    if (e.key === "ArrowUp" && isPopupVisible) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const items = Array.from(spawnMobMentionList.querySelectorAll("[data-value]"));
+      activeIndex = Math.max(0, activeIndex - 1);
+      items.forEach((el, idx) => el.classList.toggle("active", idx === activeIndex));
+      items[activeIndex]?.scrollIntoView({ block: "nearest" });
+    }
+  });
+
+  spawnMobName.addEventListener("blur", () => {
+    setTimeout(() => hidePopup(), 120);
+  });
+
+  spawnMobMentionPopup.addEventListener("mousedown", (e) => {
+    // Prevent input blur before click selection.
+    e.preventDefault();
+  });
+}
+
+function initGiveItemMentions() {
+  if (!giveItemName || !giveItemMentionPopup || !giveItemMentionList) return;
+
+  let activeIndex = 0;
+
+  const ITEM_SUGGESTIONS = Array.isArray(window.MinecraftSuggestions?.items) ? window.MinecraftSuggestions.items : [];
+
+  function hidePopup() {
+    giveItemMentionPopup.classList.add("d-none");
+    giveItemMentionList.innerHTML = "";
+    activeIndex = 0;
+  }
+
+  function showPopup() {
+    giveItemMentionPopup.classList.remove("d-none");
+  }
+
+  function applySelection(value) {
+    giveItemName.value = value;
+    giveItemName.setSelectionRange(value.length, value.length);
+    hidePopup();
+    giveItemName.focus();
+  }
+
+  function renderList(items, query) {
+    const q = String(query || "");
+    giveItemMentionList.innerHTML = "";
+    items.forEach((itemId, idx) => {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = `list-group-item list-group-item-action d-flex align-items-center justify-content-between ${idx === activeIndex ? "active" : ""}`;
+      const safe = String(itemId);
+      const prefixLen = q && safe.toLowerCase().startsWith(q.toLowerCase()) ? q.length : 0;
+      el.innerHTML = `<div><i class="bi bi-box-seam me-2"></i>${prefixLen ? `<strong>${safe.slice(0, prefixLen)}</strong>${safe.slice(prefixLen)}` : safe}</div>`;
+      el.dataset.value = safe;
+      el.onclick = () => applySelection(safe);
+      giveItemMentionList.appendChild(el);
+    });
+  }
+
+  function updatePopupFromInput() {
+    const raw = String(giveItemName.value || "").trim();
+    const q = raw.toLowerCase();
+    const items = (q ? ITEM_SUGGESTIONS.filter((m) => m.toLowerCase().includes(q)) : ITEM_SUGGESTIONS.slice(0))
+      .slice(0, 15);
+    if (items.length === 0) return hidePopup();
+    renderList(items, raw);
+    showPopup();
+  }
+
+  giveItemName.addEventListener("input", () => {
+    activeIndex = 0;
+    updatePopupFromInput();
+  });
+
+  giveItemName.addEventListener("focus", () => {
+    activeIndex = 0;
+    updatePopupFromInput();
+  });
+
+  giveItemName.addEventListener("keydown", (e) => {
+    const isPopupVisible = !giveItemMentionPopup.classList.contains("d-none");
+    if (e.key === "Escape" && isPopupVisible) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      hidePopup();
+      return;
+    }
+    if ((e.key === "Tab" || e.key === "Enter") && isPopupVisible) {
+      const items = Array.from(giveItemMentionList.querySelectorAll("[data-value]"));
+      const el = items[activeIndex];
+      if (el) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        applySelection(el.dataset.value);
+      }
+      return;
+    }
+    if (e.key === "ArrowDown" && isPopupVisible) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const items = Array.from(giveItemMentionList.querySelectorAll("[data-value]"));
+      activeIndex = Math.min(items.length - 1, activeIndex + 1);
+      items.forEach((el, idx) => el.classList.toggle("active", idx === activeIndex));
+      items[activeIndex]?.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    if (e.key === "ArrowUp" && isPopupVisible) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const items = Array.from(giveItemMentionList.querySelectorAll("[data-value]"));
+      activeIndex = Math.max(0, activeIndex - 1);
+      items.forEach((el, idx) => el.classList.toggle("active", idx === activeIndex));
+      items[activeIndex]?.scrollIntoView({ block: "nearest" });
+    }
+  });
+
+  giveItemName.addEventListener("blur", () => {
+    setTimeout(() => hidePopup(), 120);
+  });
+
+  giveItemMentionPopup.addEventListener("mousedown", (e) => {
+    e.preventDefault();
   });
 }
 
@@ -902,12 +1497,20 @@ function sparklineSvg(values, color) {
       return `${x},${y}`;
     })
     .join(" ");
+  const gridLines = [0.25, 0.5, 0.75]
+    .map((p) => {
+      const y = (height - p * height).toFixed(2);
+      return `<line x1="0" y1="${y}" x2="${width}" y2="${y}" stroke="rgba(255,255,255,0.06)" stroke-width="0.5" />`;
+    })
+    .join("");
+
   return `
-    <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+    <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" style="display: block; width: 100%; height: 100%;">
+      ${gridLines}
       <polyline
         fill="none"
         stroke="${color}"
-        stroke-width="2"
+        stroke-width="1.5"
         stroke-linecap="round"
         stroke-linejoin="round"
         points="${points}"
@@ -919,6 +1522,22 @@ function sparklineSvg(values, color) {
 function renderResourceCharts(clear = false) {
   if (cpuChart) cpuChart.innerHTML = clear ? "" : sparklineSvg(cpuHistory, "rgba(77, 171, 255, 0.95)");
   if (memChart) memChart.innerHTML = clear ? "" : sparklineSvg(memHistory, "rgba(255, 193, 7, 0.95)");
+  if (clear) {
+    if (cpuHistoryChart) cpuHistoryChart.innerHTML = "";
+    if (memHistoryChart) memHistoryChart.innerHTML = "";
+  }
+}
+
+function renderHistoricalCharts(history) {
+  hasHistoricalPerformance = Boolean(history && Array.isArray(history) && history.length >= 2);
+  if (openHistoricalPerfBtn) openHistoricalPerfBtn.disabled = !hasHistoricalPerformance;
+  if (!hasHistoricalPerformance) return;
+  
+  const cpuValues = history.map(h => h.cpu);
+  const memValues = history.map(h => h.mem);
+
+  if (cpuHistoryChart) cpuHistoryChart.innerHTML = sparklineSvg(cpuValues, "rgba(77, 171, 255, 0.8)", 400, 60);
+  if (memHistoryChart) memHistoryChart.innerHTML = sparklineSvg(memValues, "rgba(255, 193, 7, 0.8)", 400, 60);
 }
 
 function formatBytes(bytes) {
@@ -1188,6 +1807,17 @@ async function handleSendCommand() {
 
     try {
       await sendCommand("send_command", { command });
+      
+      // Update History
+      if (commandHistory[0] !== command) {
+        commandHistory.unshift(command);
+        if (commandHistory.length > 50) commandHistory.pop();
+        try {
+          localStorage.setItem(STORAGE_KEYS.commandHistory, JSON.stringify(commandHistory));
+        } catch (_e) {}
+      }
+      historyIndex = -1;
+      
       commandInput.value = "";
     } finally {
       commandInput.disabled = false;
@@ -1242,11 +1872,19 @@ sidebarToggle.onclick = toggleSidebar;
   initAutostartServerSettingsToggle();
   initDropdownCloseAnimations();
   initCommandMentions();
+  initSpawnMobMentions();
+  initGiveItemMentions();
+  initSidebarBackdrop();
   initFromHash();
   initBackupSorting();
   initQuickMacros();
   initChatUI();
+  initConsoleSplitView();
+  initConsoleMobileTabs();
+  initHistoricalPerformanceModal();
   initMotdToolbox();
+  initPlayerActions();
+  initActivePlayerActionButtons();
   startAutoRefresh();
   refreshStatus();
 
@@ -1335,6 +1973,176 @@ function startAutoRefresh() {
   autoRefreshTimer = setInterval(refreshStatus, sec * 1000);
 }
 
+function initConsoleSplitView() {
+  const splitView = document.querySelector("#section-console .split-view");
+  const primary = document.querySelector("#section-console .split-pane-primary");
+  const secondary = document.getElementById("chatPanel");
+  const divider = document.getElementById("consoleSplitDivider");
+  if (!splitView || !primary || !secondary || !divider) return;
+
+  function isMobileLayout() {
+    return window.matchMedia("(max-width: 991.98px)").matches;
+  }
+
+  function setPrimaryPct(pct) {
+    const clamped = Math.max(15, Math.min(85, Number(pct)));
+    primary.style.flex = `0 0 ${clamped}%`;
+    primary.style.flexBasis = `${clamped}%`;
+    secondary.style.flex = "1 1 auto";
+  }
+
+  function loadPct() {
+    const key = isMobileLayout() ? STORAGE_SPLIT_KEYS.consoleSplitMobilePct : STORAGE_SPLIT_KEYS.consoleSplitDesktopPct;
+    try {
+      const stored = Number(localStorage.getItem(key));
+      if (Number.isFinite(stored) && stored >= 15 && stored <= 85) return stored;
+    } catch (_e) {}
+    return isMobileLayout() ? 60 : 70;
+  }
+
+  function savePct(pct) {
+    const key = isMobileLayout() ? STORAGE_SPLIT_KEYS.consoleSplitMobilePct : STORAGE_SPLIT_KEYS.consoleSplitDesktopPct;
+    try {
+      localStorage.setItem(key, String(pct));
+    } catch (_e) {}
+  }
+
+  function applyInitial() {
+    setPrimaryPct(loadPct());
+  }
+
+  function updateDividerVisibility() {
+    const hide = secondary.classList.contains("d-none");
+    divider.classList.toggle("d-none", hide);
+    splitView.classList.toggle("split-secondary-hidden", hide);
+  }
+
+  applyInitial();
+  updateDividerVisibility();
+
+  const observer = new MutationObserver(() => updateDividerVisibility());
+  observer.observe(secondary, { attributes: true, attributeFilter: ["class"] });
+
+  let dragging = false;
+  let startPos = 0;
+  let startPct = 0;
+
+  function getPos(evt) {
+    return isMobileLayout() ? evt.clientY : evt.clientX;
+  }
+
+  function pointerMove(evt) {
+    if (!dragging) return;
+    const rect = splitView.getBoundingClientRect();
+    const size = isMobileLayout() ? rect.height : rect.width;
+    const delta = getPos(evt) - startPos;
+    const pctDelta = (delta / Math.max(1, size)) * 100;
+    const next = Math.max(15, Math.min(85, startPct + pctDelta));
+    setPrimaryPct(next);
+    savePct(next);
+  }
+
+  function pointerUp() {
+    if (!dragging) return;
+    dragging = false;
+    divider.classList.remove("dragging");
+    window.removeEventListener("pointermove", pointerMove);
+    window.removeEventListener("pointerup", pointerUp);
+  }
+
+  divider.addEventListener("pointerdown", (evt) => {
+    if (secondary.classList.contains("d-none")) return;
+    dragging = true;
+    divider.classList.add("dragging");
+    divider.setPointerCapture?.(evt.pointerId);
+    startPos = getPos(evt);
+    const current = primary.getBoundingClientRect();
+    const total = splitView.getBoundingClientRect();
+    startPct = isMobileLayout() ? (current.height / Math.max(1, total.height)) * 100 : (current.width / Math.max(1, total.width)) * 100;
+    window.addEventListener("pointermove", pointerMove);
+    window.addEventListener("pointerup", pointerUp, { once: true });
+  });
+
+  window.addEventListener("resize", () => applyInitial());
+}
+
+function initConsoleMobileTabs() {
+  const splitView = document.querySelector("#section-console .split-view");
+  const secondary = document.getElementById("chatPanel");
+  const divider = document.getElementById("consoleSplitDivider");
+  const btnLogs = document.getElementById("consoleTabLogs");
+  const btnChat = document.getElementById("consoleTabChat");
+  if (!splitView || !secondary || !divider || !btnLogs || !btnChat) return;
+
+  function isMobileLayout() {
+    return window.matchMedia("(max-width: 991.98px)").matches;
+  }
+
+  function getStoredTab() {
+    try {
+      const stored = String(localStorage.getItem(STORAGE_SPLIT_KEYS.consoleMobileTab) || "").toLowerCase();
+      if (stored === "chat" || stored === "logs") return stored;
+    } catch (_e) {}
+    return "logs";
+  }
+
+  function storeTab(tab) {
+    try {
+      localStorage.setItem(STORAGE_SPLIT_KEYS.consoleMobileTab, tab);
+    } catch (_e) {}
+  }
+
+  function setActiveTab(tab) {
+    const next = tab === "chat" ? "chat" : "logs";
+    splitView.classList.toggle("mobile-tab-logs", next === "logs");
+    splitView.classList.toggle("mobile-tab-chat", next === "chat");
+    btnLogs.classList.toggle("active", next === "logs");
+    btnChat.classList.toggle("active", next === "chat");
+    storeTab(next);
+  }
+
+  function syncAvailability() {
+    const chatAvailable = !secondary.classList.contains("d-none");
+    btnChat.disabled = !chatAvailable;
+    if (isMobileLayout()) {
+      divider.classList.add("d-none");
+    }
+    if (!isMobileLayout()) {
+      splitView.classList.remove("mobile-tab-logs", "mobile-tab-chat");
+      divider.classList.toggle("d-none", !chatAvailable);
+      return;
+    }
+    if (!chatAvailable && splitView.classList.contains("mobile-tab-chat")) {
+      setActiveTab("logs");
+    }
+  }
+
+  btnLogs.addEventListener("click", () => setActiveTab("logs"));
+  btnChat.addEventListener("click", () => {
+    if (btnChat.disabled) return;
+    setActiveTab("chat");
+  });
+
+  const observer = new MutationObserver(() => syncAvailability());
+  observer.observe(secondary, { attributes: true, attributeFilter: ["class"] });
+
+  setActiveTab(getStoredTab());
+  syncAvailability();
+  window.addEventListener("resize", () => syncAvailability());
+}
+
+function initHistoricalPerformanceModal() {
+  if (!openHistoricalPerfBtn) return;
+  openHistoricalPerfBtn.disabled = true;
+  openHistoricalPerfBtn.addEventListener("click", () => {
+    if (!hasHistoricalPerformance) {
+      showError("Historical performance data is not available yet.");
+      return;
+    }
+    historicalPerfModal?.show();
+  });
+}
+
 function initFromHash() {
   function normalize(hash) {
     const h = (hash || "").replace(/^#/, "").trim();
@@ -1379,16 +2187,14 @@ function initMotdToolbox() {
   }
 
   toolboxSendEveryoneBtn?.addEventListener("click", sendToolboxMessageToEveryone);
-  toolboxCopyBtn?.addEventListener("click", async () => {
-    const ok = await copyToolboxCommand(toolboxCopyType);
-    if (ok) showToolboxCopiedFeedback();
-  });
   toolboxCopyDropdownMenu?.addEventListener("click", async (event) => {
     const button = event.target?.closest?.("[data-copy-type]");
     if (!button || !button.dataset.copyType) return;
     setToolboxCopyType(button.dataset.copyType);
-    const ok = await copyToolboxCommand(button.dataset.copyType);
-    if (ok) showToolboxCopiedFeedback();
+    const command = buildToolboxCommand(button.dataset.copyType, (motdInput.value || "").trim());
+    if (!command) return;
+    const ok = await copyTextToClipboard(command, toolboxCopyBtn);
+    if (!ok) showError("Copy failed.");
   });
   setToolboxCopyType(toolboxCopyType);
   updateMotdPreview();
@@ -1437,16 +2243,34 @@ function copyToolboxCommand(type) {
   return copyTextToClipboard(command);
 }
 
-function copyTextToClipboard(text) {
-  if (!text) return;
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    return navigator.clipboard
-      .writeText(text)
-      .then(() => true)
-      .catch(() => fallbackCopyText(text));
-  } else {
-    return fallbackCopyText(text);
+async function copyTextToClipboard(text, btn = null) {
+  if (!text) return false;
+  let ok = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } else {
+      ok = fallbackCopyText(text);
+    }
+  } catch (_e) {
+    ok = fallbackCopyText(text);
   }
+
+  if (ok && btn) {
+    const originalHtml = btn.innerHTML;
+    const originalWidth = btn.offsetWidth;
+    const originalOpacity = btn.style.opacity || "1";
+    btn.style.width = `${originalWidth}px`;
+    btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Copied!';
+    btn.style.opacity = "0.85";
+    setTimeout(() => {
+      btn.innerHTML = originalHtml;
+      btn.style.width = "";
+      btn.style.opacity = originalOpacity;
+    }, 2000);
+  }
+  return ok;
 
   function fallbackCopyText(value) {
     try {
@@ -1457,11 +2281,11 @@ function copyTextToClipboard(text) {
       textarea.style.left = "-9999px";
       document.body.appendChild(textarea);
       textarea.select();
-      const ok = document.execCommand("copy");
+      const success = document.execCommand("copy");
       document.body.removeChild(textarea);
-      return Promise.resolve(Boolean(ok));
+      return Boolean(success);
     } catch (_e) {
-      return Promise.resolve(false);
+      return false;
     }
   }
 }
@@ -1469,10 +2293,6 @@ function copyTextToClipboard(text) {
 function setToolboxCopyType(type) {
   const normalized = (type || "say").toLowerCase();
   toolboxCopyType = normalized;
-  if (toolboxCopyLabel) {
-    toolboxCopyLabel.textContent = "Copy";
-  }
-  clearToolboxCopiedFeedback();
   if (!toolboxCopyDropdownMenu) return;
   toolboxCopyDropdownMenu.querySelectorAll("[data-copy-type]").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.copyType === normalized);
@@ -1483,28 +2303,6 @@ function updateToolboxCopyButtonState() {
   if (!toolboxCopyBtn || !motdInput) return;
   const hasInput = Boolean((motdInput.value || "").trim());
   toolboxCopyBtn.disabled = !hasInput;
-  if (toolboxCopyToggleBtn) toolboxCopyToggleBtn.disabled = !hasInput;
-  if (toolboxCopyLabel && toolboxCopyLabel.textContent !== "Copy") {
-    clearToolboxCopiedFeedback();
-    toolboxCopyLabel.textContent = "Copy";
-  }
-}
-
-function clearToolboxCopiedFeedback() {
-  if (toolboxCopyFeedbackTimer) {
-    clearTimeout(toolboxCopyFeedbackTimer);
-    toolboxCopyFeedbackTimer = null;
-  }
-}
-
-function showToolboxCopiedFeedback() {
-  if (!toolboxCopyLabel) return;
-  clearToolboxCopiedFeedback();
-  toolboxCopyLabel.textContent = "Copied!";
-  toolboxCopyFeedbackTimer = setTimeout(() => {
-    toolboxCopyFeedbackTimer = null;
-    if (toolboxCopyLabel) toolboxCopyLabel.textContent = "Copy";
-  }, 1200);
 }
 
 function insertMotdCode(code) {
@@ -1653,6 +2451,53 @@ function initChatUI() {
       sendChatMessage();
     }
   });
+
+  if (chatNotificationToastEl) {
+    chatNotificationToastEl.style.cursor = "pointer";
+    chatNotificationToastEl.addEventListener("click", () => {
+      showSection("console");
+      chatNotificationToast?.hide();
+    });
+  }
+
+  const chatPrefixModalEl = document.getElementById("chatPrefixModal");
+  if (chatPrefixModalEl) {
+    chatPrefixModal = new bootstrap.Modal(chatPrefixModalEl);
+  }
+
+  const chatPrefixBtn = document.getElementById("chatPrefixBtn");
+  const chatPrefixInput = document.getElementById("chatPrefixInput");
+  const saveChatPrefixBtn = document.getElementById("saveChatPrefixBtn");
+
+  chatPrefixBtn?.addEventListener("click", () => {
+    if (chatPrefixInput) {
+      chatPrefixInput.value = chatPrefix.trim();
+      chatPrefixModal?.show();
+    }
+  });
+
+  saveChatPrefixBtn?.addEventListener("click", () => {
+    if (chatPrefixInput) {
+      let val = chatPrefixInput.value.trim();
+      if (val) {
+        chatPrefix = val + " ";
+      } else {
+        chatPrefix = "";
+      }
+
+      if (chatPrefixBtn) {
+        if (chatPrefix) {
+          chatPrefixBtn.classList.add("text-primary");
+          chatPrefixBtn.classList.remove("text-white");
+        } else {
+          chatPrefixBtn.classList.add("text-white");
+          chatPrefixBtn.classList.remove("text-primary");
+        }
+      }
+    }
+    chatPrefixModal?.hide();
+  });
+
   chatRecipientDropdownMenu?.addEventListener("click", (event) => {
     const btn = event.target?.closest?.("[data-recipient]");
     if (!btn) return;
@@ -1697,13 +2542,39 @@ function updateChatPlayersList(players) {
 }
 
 function pushChatMessage(entry) {
-  const uid = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const now = Date.now();
+  const uid = `${now}-${Math.random().toString(16).slice(2)}`;
+  
+  // Deduplication: If inbound message matches a recent outbound one, ignore it
+  if (entry.direction === "inbound") {
+    const isDuplicate = chatMessages.some(msg => {
+      if (msg.direction !== "outbound") return false;
+      // Check if text matches
+      if (msg.text !== entry.text) return false;
+      // Check if sender matches prefix (if set)
+      if (msg.prefix && entry.sender && entry.sender.indexOf(msg.prefix.trim()) === -1) return false;
+      // Check timestamp proximity (last 3 seconds)
+      const msgTime = parseInt(msg.uid.split("-")[0]);
+      return (now - msgTime) < 3000;
+    });
+    if (isDuplicate) return;
+  }
+
   chatMessages.push({ ...entry, uid });
   if (chatMessages.length > CHAT_MESSAGE_LIMIT) {
     chatMessages.shift();
   }
   renderChatMessages();
   persistChatHistory();
+
+  // Show notification if it's an inbound message and chat tab is not active
+  if (entry.direction === "inbound" && currentSection !== "console" && chatNotificationToast) {
+    const chatNotificationBody = document.getElementById("chatNotificationBody");
+    if (chatNotificationBody) {
+      chatNotificationBody.textContent = `${entry.sender || "Player"}: ${entry.text}`;
+      chatNotificationToast.show();
+    }
+  }
 }
 
 function ingestChatFromLogs(logs) {
@@ -1728,6 +2599,15 @@ function ingestChatFromLogs(logs) {
   for (let i = startIndex; i < logs.length; i += 1) {
     const parsed = parseChatLogLine(logs[i]);
     if (!parsed) continue;
+
+    // Check if this inbound message already exists in chatMessages (prevent reload duplicates)
+    const alreadyPresent = chatMessages.some(m => 
+      m.direction === "inbound" && 
+      m.sender === parsed.sender && 
+      m.text === parsed.text
+    );
+    if (alreadyPresent) continue;
+
     pushChatMessage({
       direction: "inbound",
       sender: parsed.sender,
@@ -1769,14 +2649,17 @@ function renderChatMessages() {
   const shouldAnimateUid = lastMsg?.uid && lastMsg.uid !== lastAnimatedChatUid ? lastMsg.uid : null;
   chatMessages.forEach((msg) => {
     const isInbound = msg.direction === "inbound";
-    const label = isInbound ? `${msg.sender || "Player"}` : `You`;
+    const label = isInbound ? (msg.sender || "Player") : (msg.prefix?.trim() || "You");
     const row = document.createElement("div");
     row.className = `chat-row ${isInbound ? "chat-row-inbound" : "chat-row-outbound"}`;
     row.innerHTML = `
       <div class="chat-bubble ${isInbound ? "chat-bubble-inbound" : "chat-bubble-outbound"} ${msg.uid === shouldAnimateUid ? "chat-pop" : ""}" data-chat-uid="${msg.uid || ""}">
         <div class="chat-meta small opacity-75">
-          <span><i class="bi ${isInbound ? "bi-person-fill" : "bi-send-fill"} me-1"></i>${label}</span>
-          <span class="ms-2">${msg.timestamp || ""}</span>
+          <div class="chat-label">
+            <i class="bi ${isInbound ? "bi-person-fill" : "bi-send-fill"} me-1"></i>
+            <span>${escapeHtml(label)}</span>
+          </div>
+          <span class="chat-timestamp ms-2">${msg.timestamp || ""}</span>
         </div>
         <div class="chat-text">${escapeHtml(msg.text || "")}</div>
       </div>
@@ -1808,10 +2691,17 @@ async function sendChatMessage() {
   if (chatRecipientBtn) chatRecipientBtn.disabled = true;
   const target = chatRecipient.id === "@a" ? "@a" : chatRecipient.id;
   try {
-    await sendServerCommand(`tell ${target} ${text}`);
+    if (chatPrefix) {
+      const fullText = `${chatPrefix}${text}`;
+      const tellrawJson = JSON.stringify({ rawtext: [{ text: fullText }] });
+      await sendServerCommand(`tellraw ${target} ${tellrawJson}`, { skipRefresh: true });
+    } else {
+      await sendServerCommand(`tell ${target} ${text}`, { skipRefresh: true });
+    }
     pushChatMessage({
       direction: "outbound",
       text,
+      prefix: chatPrefix,
       targetLabel: chatRecipient.label,
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     });
@@ -1822,6 +2712,8 @@ async function sendChatMessage() {
     chatSendBtn.disabled = !isServerRunning;
     if (chatRecipientBtn) chatRecipientBtn.disabled = !isServerRunning;
     chatInput.focus();
+    // Immediate refresh to pull latest logs/chat from server
+    refreshStatus();
   }
 }
 
@@ -1857,8 +2749,20 @@ function loadChatHistoryFromStorage() {
       if (entry && typeof entry.text === "string") {
         const uid = entry.uid || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
         chatMessages.push({ ...entry, uid });
+        
+        // Try to set lastChatLogLine to the last inbound message's original format if we have it
+        // Or at least avoid re-ingesting what we already have.
+        // Actually, just knowing we HAVE messages helps ingestChatFromLogs decide.
       }
     });
+
+    // We don't have the "raw" log line stored, but we can prevent the very first 
+    // ingestChatFromLogs from adding the "fallback" tail if we already have history.
+    if (chatMessages.length > 0) {
+      // setting it to a non-null but not-matching value will force the fallback 
+      // check, but we want to avoid duplicates.
+      // Better: update ingestChatFromLogs to check if message already exists.
+    }
   } catch (_e) {}
 }
 
@@ -1866,13 +2770,20 @@ function initQuickMacros() {
   quickMacroForm?.addEventListener("submit", handleMacroSubmit);
   quickMacroModalEl?.addEventListener("hidden.bs.modal", resetMacroForm);
   quickMacroDeleteBtn?.addEventListener("click", handleMacroDelete);
+  quickMacroOutputBtn?.addEventListener("click", () => {
+    const macroId = quickMacroIdInput?.value;
+    const macro = quickMacros.find(m => m.id === macroId);
+    if (macro) openMacroOutput(macro);
+  });
   quickMacroIconInput?.addEventListener("change", updateQuickMacroCustomIconVisibility);
   quickMacroTriggerSelect?.addEventListener("change", () => {
     updateQuickMacroIntervalVisibility();
     updateQuickMacroKeywordVisibility();
+    updateQuickMacroTimeVisibility();
   });
   updateQuickMacroCustomIconVisibility();
   quickMacroTriggerBtn?.addEventListener("click", () => resetMacroForm());
+  initMacroVariablesUI();
   fetchQuickMacros();
   resetMacroForm();
 }
@@ -1887,8 +2798,10 @@ async function fetchQuickMacros() {
     }
     const macrosPayload = payload.macros;
     const presetsPayload = payload.presets;
+    const varsPayload = payload.variables;
     quickMacros = Array.isArray(macrosPayload) ? macrosPayload : [];
     presetMacros = Array.isArray(presetsPayload) ? presetsPayload : [];
+    macroVariables = Array.isArray(varsPayload) ? varsPayload : [];
     renderQuickMacros();
     renderPresetMacros();
   } catch (err) {
@@ -1932,6 +2845,8 @@ function renderQuickMacros() {
         ? "On server stop"
         : trigger === "interval" && macro.interval_seconds && Number(macro.interval_seconds) > 0
         ? `Auto every ${macro.interval_seconds}s`
+        : trigger === "time" && macro.time_of_day
+        ? `Daily at ${macro.time_of_day}`
         : trigger === "chat_keyword" && macro.chat_keyword
         ? `On chat keyword: ${macro.chat_keyword}`
         : "Manual";
@@ -1957,14 +2872,9 @@ function renderQuickMacros() {
     editBtn.className = "btn btn-outline-secondary edit-btn";
     editBtn.textContent = "Edit";
     editBtn.addEventListener("click", () => openMacroEditor(macro));
-    const outputBtn = document.createElement("button");
-    outputBtn.type = "button";
-    outputBtn.className = "btn btn-outline-light edit-btn";
-    outputBtn.textContent = "Output";
-    outputBtn.addEventListener("click", () => openMacroOutput(macro));
+    
     actions.appendChild(executeBtn);
     actions.appendChild(editBtn);
-    actions.appendChild(outputBtn);
     card.appendChild(header);
     card.appendChild(actions);
     col.appendChild(card);
@@ -2021,6 +2931,7 @@ const TRIGGER_CANONICAL = {
   server_started: "server_started",
   server_stopped: "server_stopped",
   chat_keyword: "chat_keyword",
+  time: "time",
 };
 
 function normalizeMacroTrigger(trigger) {
@@ -2047,6 +2958,18 @@ function applyPresetToModal(preset) {
   if (quickMacroCommandsInput) quickMacroCommandsInput.value = (preset.commands || []).join("\n");
   if (quickMacroTriggerSelect) quickMacroTriggerSelect.value = normalizeMacroTrigger(preset.trigger || "manual");
   updateQuickMacroIntervalVisibility();
+  if (quickMacroIntervalInput) {
+    quickMacroIntervalInput.value =
+      preset.interval_seconds && Number(preset.interval_seconds) > 0 ? String(Math.floor(Number(preset.interval_seconds))) : "";
+  }
+  if (quickMacroKeywordInput) {
+    quickMacroKeywordInput.value = (preset.chat_keyword || "").trim();
+  }
+  if (quickMacroTimeInput) {
+    quickMacroTimeInput.value = (preset.time_of_day || "").trim();
+  }
+  updateQuickMacroKeywordVisibility();
+  updateQuickMacroTimeVisibility();
   if (quickMacroModalTitle) quickMacroModalTitle.textContent = "New Quick Macro";
   quickMacroModal?.show();
 }
@@ -2059,9 +2982,21 @@ function updateQuickMacroIntervalVisibility() {
   wrapper.classList.toggle("d-none", trigger !== "interval");
 }
 
+function updateQuickMacroTimeVisibility() {
+  if (!quickMacroTriggerSelect || !quickMacroTimeWrapper) return;
+  const trigger = (quickMacroTriggerSelect.value || "manual").toLowerCase();
+  quickMacroTimeWrapper.classList.toggle("d-none", trigger !== "time");
+}
+
 async function activateMacro(macro) {
   if (!macro) return;
-  await sendCommand("run_macro", { macro_id: macro.id, macro_title: macro.title, commands: macro.commands });
+  const playerName = (chatRecipient && chatRecipient.id && !chatRecipient.id.startsWith("@")) ? chatRecipient.id : "";
+  await sendCommand("run_macro", { 
+    macro_id: macro.id, 
+    macro_title: macro.title, 
+    commands: macro.commands,
+    player_name: playerName
+  });
   fetchQuickMacros();
 }
 
@@ -2082,6 +3017,7 @@ async function handleMacroSubmit(event) {
     icon = "bi-gear-fill";
   }
   const intervalValue = quickMacroIntervalInput ? quickMacroIntervalInput.value.trim() : "";
+  const timeValue = quickMacroTimeInput ? quickMacroTimeInput.value.trim() : "";
   const trigger = (quickMacroTriggerSelect?.value || (intervalValue ? "interval" : "manual")).toString().toLowerCase();
   const payload = {
     title,
@@ -2096,6 +3032,13 @@ async function handleMacroSubmit(event) {
       return;
     }
     payload.chat_keyword = keyword;
+  }
+  if (trigger === "time") {
+    if (!timeValue) {
+      showError("Time of day is required for time-based macros.");
+      return;
+    }
+    payload.time_of_day = timeValue;
   }
   if (trigger === "interval" && intervalValue) {
     const parsed = Number(intervalValue);
@@ -2185,6 +3128,9 @@ function openMacroEditor(macro) {
   if (quickMacroKeywordInput) {
     quickMacroKeywordInput.value = macro.chat_keyword || "";
   }
+  if (quickMacroTimeInput) {
+    quickMacroTimeInput.value = macro.time_of_day || "";
+  }
   if (quickMacroTriggerSelect) {
     const triggerValue = normalizeMacroTrigger(
       macro.trigger || (macro.interval_seconds ? "interval" : "manual")
@@ -2194,11 +3140,13 @@ function openMacroEditor(macro) {
   updateQuickMacroCustomIconVisibility();
   updateQuickMacroIntervalVisibility();
   updateQuickMacroKeywordVisibility();
+  updateQuickMacroTimeVisibility();
   if (quickMacroModalTitle) {
     quickMacroModalTitle.textContent = "Editing macro";
   }
   quickMacroDeleteBtn?.classList.remove("d-none");
   quickMacroDeleteBtn && (quickMacroDeleteBtn.disabled = false);
+  quickMacroOutputBtn?.classList.remove("d-none");
   quickMacroModal?.show();
 }
 
@@ -2210,6 +3158,9 @@ function resetMacroForm() {
   }
   if (quickMacroKeywordInput) {
     quickMacroKeywordInput.value = "";
+  }
+  if (quickMacroTimeInput) {
+    quickMacroTimeInput.value = "";
   }
   if (quickMacroTriggerSelect) {
     quickMacroTriggerSelect.value = "manual";
@@ -2223,8 +3174,162 @@ function resetMacroForm() {
   updateQuickMacroCustomIconVisibility();
   updateQuickMacroIntervalVisibility();
   updateQuickMacroKeywordVisibility();
+  updateQuickMacroTimeVisibility();
   quickMacroDeleteBtn?.classList.add("d-none");
   quickMacroDeleteBtn && (quickMacroDeleteBtn.disabled = false);
+  quickMacroOutputBtn?.classList.add("d-none");
+}
+
+function initMacroVariablesUI() {
+  const macroVarsModalEl = document.getElementById("macroVarsModal");
+  const macroVarsModal = macroVarsModalEl ? new bootstrap.Modal(macroVarsModalEl) : null;
+  const macroVarsList = document.getElementById("macroVarsList");
+  const macroVarsEmpty = document.getElementById("macroVarsEmpty");
+  const addMacroVarBtn = document.getElementById("addMacroVarBtn");
+  const addRandomMacroVarBtn = document.getElementById("addRandomMacroVarBtn");
+  const saveMacroVarsBtn = document.getElementById("saveMacroVarsBtn");
+  if (!macroVarsModal || !macroVarsList || !saveMacroVarsBtn) return;
+
+  function normalizeVarName(name) {
+    const raw = String(name || "").trim();
+    if (!raw) return "";
+    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(raw)) return "";
+    return raw;
+  }
+
+  function buildRow(variable = {}) {
+    const name = String(variable.name || "").trim();
+    const type = String(variable.type || "static").trim().toLowerCase();
+    const value = String(variable.value || "");
+    const items = Array.isArray(variable.items) ? variable.items : [];
+
+    const card = document.createElement("div");
+    card.className = "card bg-black border-secondary";
+    card.innerHTML = `
+      <div class="card-body p-3">
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+          <div class="flex-grow-1" style="min-width: 180px;">
+            <label class="form-label small text-muted mb-1">Name</label>
+            <input type="text" class="form-control bg-dark border-secondary text-white macro-var-name" placeholder="e.g. kit_name" value="${escapeHtml(name)}">
+            <div class="form-text text-muted">Use as <code>{${escapeHtml(name || "var")}}</code></div>
+          </div>
+          <div style="min-width: 170px;">
+            <label class="form-label small text-muted mb-1">Type</label>
+            <select class="form-select bg-dark border-secondary text-white macro-var-type">
+              <option value="static" ${type !== "random" ? "selected" : ""}>Static value</option>
+              <option value="random" ${type === "random" ? "selected" : ""}>Random from list</option>
+            </select>
+          </div>
+          <div class="ms-auto">
+            <button type="button" class="btn btn-sm btn-outline-danger macro-var-delete">
+              <i class="bi bi-trash"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="mt-3 macro-var-static ${type === "random" ? "d-none" : ""}">
+          <label class="form-label small text-muted mb-1">Value</label>
+          <input type="text" class="form-control bg-dark border-secondary text-white macro-var-value" placeholder="e.g. diamond_sword" value="${escapeHtml(value)}">
+        </div>
+
+        <div class="mt-3 macro-var-random ${type === "random" ? "" : "d-none"}">
+          <label class="form-label small text-muted mb-1">Items (one per line)</label>
+          <textarea class="form-control bg-dark border-secondary text-white macro-var-items" rows="3" placeholder="e.g.\napple\ngolden_apple\nbread">${escapeHtml(items.join("\n"))}</textarea>
+          <div class="form-text text-muted">One item will be chosen at random each time a macro runs.</div>
+        </div>
+      </div>
+    `;
+
+    const typeSel = card.querySelector(".macro-var-type");
+    const staticWrap = card.querySelector(".macro-var-static");
+    const randomWrap = card.querySelector(".macro-var-random");
+    const delBtn = card.querySelector(".macro-var-delete");
+    delBtn.onclick = () => {
+      card.remove();
+      updateEmptyState();
+    };
+    typeSel.onchange = () => {
+      const t = String(typeSel.value || "static").toLowerCase();
+      staticWrap.classList.toggle("d-none", t === "random");
+      randomWrap.classList.toggle("d-none", t !== "random");
+    };
+    return card;
+  }
+
+  function updateEmptyState() {
+    const hasAny = macroVarsList.children.length > 0;
+    macroVarsEmpty?.classList.toggle("d-none", hasAny);
+  }
+
+  function openModal() {
+    macroVarsList.innerHTML = "";
+    (macroVariables || []).forEach((v) => macroVarsList.appendChild(buildRow(v)));
+    updateEmptyState();
+    macroVarsModal.show();
+  }
+
+  function collectVariables() {
+    const rows = Array.from(macroVarsList.querySelectorAll(".card"));
+    const out = [];
+    const seen = new Set();
+    for (const row of rows) {
+      const nameRaw = row.querySelector(".macro-var-name")?.value;
+      const name = normalizeVarName(nameRaw);
+      if (!name) throw new Error("Variable names must match: A-Z, 0-9, _, - (and can’t start with a number).");
+      if (seen.has(name)) throw new Error(`Duplicate variable name: ${name}`);
+      seen.add(name);
+      const type = String(row.querySelector(".macro-var-type")?.value || "static").toLowerCase();
+      if (type === "random") {
+        const itemsText = String(row.querySelector(".macro-var-items")?.value || "");
+        const items = itemsText
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        if (!items.length) throw new Error(`Random variable "${name}" needs at least 1 item.`);
+        out.push({ name, type: "random", items });
+      } else {
+        const value = String(row.querySelector(".macro-var-value")?.value || "");
+        out.push({ name, type: "static", value });
+      }
+    }
+    return out;
+  }
+
+  async function saveVariables() {
+    const vars = collectVariables();
+    saveMacroVarsBtn.disabled = true;
+    try {
+      const response = await fetch("/api/macros", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ set_variables: true, variables: vars }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Failed to save variables.");
+      if (Array.isArray(body.variables)) macroVariables = body.variables;
+      showToast("Variables saved.", "success");
+      macroVarsModal.hide();
+    } finally {
+      saveMacroVarsBtn.disabled = false;
+    }
+  }
+
+  openMacroVarsBtn?.addEventListener("click", openModal);
+  addMacroVarBtn?.addEventListener("click", () => {
+    macroVarsList.appendChild(buildRow({ type: "static" }));
+    updateEmptyState();
+  });
+  addRandomMacroVarBtn?.addEventListener("click", () => {
+    macroVarsList.appendChild(buildRow({ type: "random", items: [""] }));
+    updateEmptyState();
+  });
+  saveMacroVarsBtn?.addEventListener("click", async () => {
+    try {
+      await saveVariables();
+    } catch (err) {
+      showError(err?.message || "Unable to save variables.");
+    }
+  });
 }
 
 function updateQuickMacroCustomIconVisibility() {
@@ -2293,7 +3398,7 @@ async function openMacroOutput(macro) {
     if (macroOutputPre) macroOutputPre.textContent = text;
     if (macroOutputCopyBtn) {
       macroOutputCopyBtn.onclick = async () => {
-        const ok = await copyTextToClipboard(text);
+        const ok = await copyTextToClipboard(text, macroOutputCopyBtn);
         if (!ok) showError("Copy failed.");
       };
     }
@@ -2316,4 +3421,318 @@ async function openMacroOutput(macro) {
     console.error(err);
     showError(err.message || "Unable to load macro output.");
   }
+}
+
+// --- Player Action Handlers ---
+async function handlePlayerAction(player, action) {
+  _currentPlayerTarget = player;
+  let command = "";
+  let confirmMessage = "";
+  let successMessage = "";
+
+  if (!player || !action) return;
+
+  if (action === "kick") {
+    confirmMessage = `Kick ${player}?`;
+    successMessage = `${player} has been kicked.`;
+  } else if (action === "ban") {
+    command = `ban ${quoteMinecraftArg(player)}`;
+    confirmMessage = `Are you sure you want to ban ${player}? This will prevent them from rejoining.`;
+    successMessage = `${player} has been banned.`;
+  } else if (action === "op") {
+    command = `op ${quoteMinecraftArg(player)}`;
+    confirmMessage = `Are you sure you want to promote ${player} to operator?`;
+    successMessage = `${player} is now an operator.`;
+  } else if (action === "spawn_at") {
+    command = `execute at ${quoteMinecraftArg(player)} run setworldspawn ~ ~ ~`;
+    confirmMessage = `Set world spawn to ${player}'s current location?`;
+    successMessage = `World spawn set to ${player}'s location.`;
+  }
+
+  if (confirmMessage) {
+    const confirmOptions = {
+      title: "Confirm",
+      confirmText: "Confirm",
+      confirmClass: "btn-primary",
+    };
+    if (action === "kick") {
+      confirmOptions.title = "Kick player";
+      confirmOptions.confirmText = "Kick";
+      confirmOptions.confirmClass = "btn-warning";
+      confirmOptions.input = {
+        label: "Reason (optional)",
+        placeholder: "e.g. Please rejoin in 5 minutes",
+        help: "The player will be kicked immediately",
+        maxLength: 120,
+        required: false,
+      };
+    } else if (action === "ban") {
+      confirmOptions.title = "Ban player";
+      confirmOptions.confirmText = "Ban";
+      confirmOptions.confirmClass = "btn-danger";
+      confirmOptions.input = {
+        label: "Reason (optional)",
+        placeholder: "e.g. Griefing",
+        help: "Adds an optional reason to the ban command (server must support it).",
+        maxLength: 120,
+        required: false,
+      };
+    } else if (action === "op") {
+      confirmOptions.title = "Grant operator";
+      confirmOptions.confirmText = "Make OP";
+      confirmOptions.confirmClass = "btn-warning";
+    }
+
+    showConfirm(confirmMessage, async (inputValue) => {
+      if (action === "kick") {
+        const rawReason = String(inputValue || "").replace(/[\r\n]+/g, " ").trim();
+        command = `kick ${quoteMinecraftArg(player)}${rawReason ? ` ${rawReason}` : ""}`;
+      } else if (action === "ban") {
+        const rawReason = String(inputValue || "").replace(/[\r\n]+/g, " ").trim();
+        command = `ban ${quoteMinecraftArg(player)}${rawReason ? ` ${rawReason}` : ""}`;
+      }
+      if (!command) return;
+      try {
+        const response = await sendCommand("send_command", { command: command });
+        if (response.success) {
+          showToast(successMessage, "success");
+          refreshStatus(); // Refresh status to update player list, OP status, etc.
+        } else {
+          showError(response.error || `Failed to ${action} ${player}.`);
+        }
+      } catch (err) {
+        showError(`Error sending command: ${err.message}`);
+      }
+    }, confirmOptions);
+  }
+}
+
+function openSpawnMobDialog(player) {
+  _currentPlayerTarget = player;
+  if (spawnMobTargetPlayer) spawnMobTargetPlayer.textContent = player;
+  if (spawnMobName) spawnMobName.value = (spawnMobName.value || "").trim() || "zombie";
+  if (spawnMobCount) spawnMobCount.value = spawnMobCount.value || "1";
+  spawnMobModal?.show();
+  setTimeout(() => spawnMobName?.focus(), 50);
+}
+
+function normalizeMobId(input) {
+  const raw = (input || "").trim();
+  if (!raw) return "";
+  return raw.toLowerCase();
+}
+
+function isSafeMobId(mobId) {
+  if (!mobId) return false;
+  // Allow common Bedrock identifiers like "zombie" or "minecraft:zombie".
+  // Block whitespace and shell-like injection characters.
+  return /^[a-z0-9_.:-]+$/.test(mobId);
+}
+
+function openTeleportDialog(player) {
+  _currentPlayerTarget = player;
+  if (tpSourcePlayer) tpSourcePlayer.textContent = player;
+  if (tpCustomSelector) tpCustomSelector.value = ""; // Clear custom selector
+  if (tpPlayerList) {
+    tpPlayerList.innerHTML = ""; // Clear existing players
+    const candidates = _allActivePlayers.filter((p) => p !== player); // Don't allow teleporting to self
+    if (candidates.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "list-group-item bg-body-secondary border-secondary-subtle text-body-secondary small";
+      empty.textContent = "No other players online.";
+      tpPlayerList.appendChild(empty);
+    }
+    candidates.forEach((p, idx) => {
+        const id = `tpTarget-${idx}`;
+        const div = document.createElement("div");
+        div.className = "list-group-item list-group-item-action bg-body-secondary border-secondary-subtle d-flex align-items-center gap-2 py-2";
+        div.innerHTML = `
+          <input class="form-check-input m-0" type="radio" name="tpTargetPlayer" id="${id}">
+          <label class="mb-0 flex-grow-1 text-truncate" for="${id}"></label>
+        `;
+        const input = div.querySelector("input");
+        const label = div.querySelector("label");
+        if (input) input.value = p;
+        if (label) label.textContent = p;
+        tpPlayerList.appendChild(div);
+      });
+  }
+  teleportModal?.show();
+}
+
+function openGiveDialog(player) {
+  _currentPlayerTarget = player;
+  if (giveTargetPlayer) giveTargetPlayer.textContent = player;
+  if (giveItemName) giveItemName.value = "";
+  if (giveItemAmount) giveItemAmount.value = "1";
+  giveModal?.show();
+}
+
+// --- Init Player Actions ---
+function initPlayerActions() {
+  function updateTpSelectedStyles() {
+    if (!tpPlayerList) return;
+    const rows = Array.from(tpPlayerList.querySelectorAll('input[type="radio"][name="tpTargetPlayer"]'));
+    rows.forEach((radio) => {
+      const item = radio.closest(".list-group-item");
+      if (!item) return;
+      item.classList.toggle("active", radio.checked);
+      item.classList.toggle("border-primary", radio.checked);
+      item.classList.toggle("bg-body-secondary", !radio.checked);
+    });
+  }
+
+  if (confirmTpBtn) {
+    confirmTpBtn.onclick = async () => {
+      let targetSelector = (tpCustomSelector.value || "").trim();
+      if (!targetSelector) {
+        // If custom selector is empty, check radio buttons
+        const selectedRadio = tpPlayerList.querySelector('input[name="tpTargetPlayer"]:checked');
+        if (selectedRadio) {
+          targetSelector = selectedRadio.value;
+        }
+      }
+
+      if (!_currentPlayerTarget || !targetSelector) {
+        showError("Please specify a target for teleportation.");
+        return;
+      }
+
+      const command = `tp ${quoteMinecraftArg(_currentPlayerTarget)} ${formatTeleportTarget(targetSelector)}`;
+      try {
+        const response = await sendCommand("send_command", { command: command });
+        if (response.success) {
+          showToast(`Teleported ${_currentPlayerTarget} to ${targetSelector}.`, "success");
+          teleportModal?.hide();
+        } else {
+          showError(response.error || `Failed to teleport ${_currentPlayerTarget}.`);
+        }
+      } catch (err) {
+        showError(`Error sending command: ${err.message}`);
+      }
+    };
+  }
+
+  if (confirmGiveBtn) {
+    confirmGiveBtn.onclick = async () => {
+      const itemName = (giveItemName.value || "").trim();
+      const itemAmount = parseInt(giveItemAmount.value || "1", 10);
+
+      if (!_currentPlayerTarget || !itemName) {
+        showError("Please specify an item name to give.");
+        return;
+      }
+      if (isNaN(itemAmount) || itemAmount < 1) {
+        showError("Item amount must be a positive number.");
+        return;
+      }
+
+      const command = `give ${quoteMinecraftArg(_currentPlayerTarget)} ${itemName} ${itemAmount}`;
+      try {
+        const response = await sendCommand("send_command", { command: command });
+        if (response.success) {
+          showToast(`Gave ${itemAmount} ${itemName} to ${_currentPlayerTarget}.`, "success");
+          giveModal?.hide();
+        } else {
+          showError(response.error || `Failed to give item to ${_currentPlayerTarget}.`);
+        }
+      } catch (err) {
+        showError(`Error sending command: ${err.message}`);
+      }
+    };
+  }
+
+  if (confirmSpawnMobBtn) {
+    confirmSpawnMobBtn.onclick = async () => {
+      const mobId = normalizeMobId(spawnMobName?.value);
+      const count = parseInt(spawnMobCount?.value || "1", 10);
+
+      if (!_currentPlayerTarget) {
+        showError("No player selected.");
+        return;
+      }
+      if (!mobId) {
+        showError("Please choose a mob to spawn.");
+        return;
+      }
+      if (!isSafeMobId(mobId)) {
+        showError("Mob id contains invalid characters. Use something like zombie or minecraft:zombie.");
+        return;
+      }
+      if (isNaN(count) || count < 1) {
+        showError("Mob count must be a positive number.");
+        return;
+      }
+      if (count > 50) {
+        showError("Mob count is capped at 50 to prevent flooding.");
+        return;
+      }
+
+      const player = _currentPlayerTarget;
+      // Close the spawn dialog so the confirmation modal is visible on mobile.
+      spawnMobModal?.hide();
+      showConfirm(`Spawn ${count} ${mobId} at ${player}?`, async () => {
+        confirmSpawnMobBtn.disabled = true;
+        try {
+          for (let i = 0; i < count; i++) {
+            const command = `execute at ${quoteMinecraftArg(player)} run summon ${mobId} ~ ~ ~`;
+            // eslint-disable-next-line no-await-in-loop
+            const response = await sendCommand("send_command", { command });
+            if (!response?.success) {
+              throw new Error(response?.error || "Failed to summon.");
+            }
+          }
+          showToast(`Spawned ${count} ${mobId} at ${player}.`, "success");
+          spawnMobModal?.hide();
+        } catch (err) {
+          showError(err?.message || "Failed to spawn mob(s).");
+        } finally {
+          confirmSpawnMobBtn.disabled = false;
+        }
+      });
+    };
+  }
+
+  // Clear custom selector when a radio button is selected
+  tpCustomSelector?.addEventListener("focus", () => {
+    if (tpPlayerList) {
+      const selectedRadio = tpPlayerList.querySelector('input[name="tpTargetPlayer"]:checked');
+      if (selectedRadio) {
+        selectedRadio.checked = false;
+        updateTpSelectedStyles();
+      }
+    }
+  });
+
+  // Clear radio button selection when custom selector is typed into
+  tpCustomSelector?.addEventListener("input", () => {
+    if (!tpPlayerList) return;
+    const selectedRadio = tpPlayerList.querySelector('input[name="tpTargetPlayer"]:checked');
+    if (selectedRadio) selectedRadio.checked = false;
+    updateTpSelectedStyles();
+  });
+
+  // Clear custom selector and update selected row styling when a radio is selected
+  tpPlayerList?.addEventListener("change", (event) => {
+    if (event.target?.type === "radio" && tpCustomSelector) {
+      tpCustomSelector.value = "";
+      updateTpSelectedStyles();
+    }
+  });
+}
+
+function initActivePlayerActionButtons() {
+  const playerList = document.getElementById("playerList");
+  if (!playerList) return;
+  playerList.addEventListener("click", (e) => {
+    const btn = e.target.closest?.("button[data-player-action][data-player]");
+    if (!btn) return;
+    const player = btn.dataset.player;
+    const action = btn.dataset.playerAction;
+    if (!player || !action) return;
+    if (action === "tp") return openTeleportDialog(player);
+    if (action === "give") return openGiveDialog(player);
+    if (action === "spawn_mob_at") return openSpawnMobDialog(player);
+    return handlePlayerAction(player, action);
+  });
 }

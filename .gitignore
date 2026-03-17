@@ -19,3 +19,6 @@ dist/
 Thumbs.db
 
 docs/TODO.txt
+docs/TODO.txt
+macros.json
+/src/MCBedrockServerManagerConfig

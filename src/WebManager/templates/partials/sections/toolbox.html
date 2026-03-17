@@ -1,0 +1,96 @@
+          <section id="section-toolbox" class="d-none">
+            <div class="page-header">
+              <h2 class="h4 mb-0">Toolbox</h2>
+            </div>
+            <div class="section-body">
+              <div class="card shadow-sm border-0 bg-dark toolbox-card">
+                <div class="card-body toolbox-card-body">
+                  <div class="toolbox-toolbar d-flex flex-wrap align-items-center gap-2 mb-3">
+                    <div class="toolbox-formatters d-flex flex-wrap gap-2" role="group" aria-label="Text formatting controls">
+                      <button type="button" class="btn btn-light text-dark" data-motd-code="l" title="Bold">
+                        <i class="bi bi-type-bold"></i>
+                      </button>
+                      <button type="button" class="btn btn-light text-dark" data-motd-code="o" title="Italic">
+                        <i class="bi bi-type-italic"></i>
+                      </button>
+                      <button type="button" class="btn btn-light text-dark" data-motd-code="n" title="Underline">
+                        <i class="bi bi-type-underline"></i>
+                      </button>
+                      <button type="button" class="btn btn-light text-dark" data-motd-code="m" title="Strikethrough">
+                        <i class="bi bi-type-strikethrough"></i>
+                      </button>
+                      <button type="button" class="btn btn-light text-dark" data-motd-code="k" title="Obfuscated">
+                        <i class="bi bi-shuffle"></i>
+                      </button>
+                      <button type="button" class="btn btn-light text-dark" data-motd-code="r" title="Reset formatting">
+                        <i class="bi bi-arrow-counterclockwise"></i>
+                      </button>
+                      <button
+                        type="button"
+                        class="btn btn-light text-dark"
+                        id="motdColorButton"
+                        data-bs-toggle="modal"
+                        data-bs-target="#motdColorModal"
+                        title="Color"
+                      >
+                        <i class="bi bi-palette"></i>
+                        <span class="ms-1 d-none d-md-inline">Color</span>
+                      </button>
+                    </div>
+                    <div class="d-flex align-items-center gap-2 ms-auto toolbox-toolbar-actions">
+                      <div class="dropdown toolbox-copy-group">
+                        <button
+                          type="button"
+                          class="btn btn-outline-secondary dropdown-toggle"
+                          id="toolboxCopyBtn"
+                          data-bs-toggle="dropdown"
+                          aria-expanded="false"
+                        >
+                          <i class="bi bi-clipboard me-1"></i>
+                          <span id="toolboxCopyLabel">Copy</span>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end" id="toolboxCopyDropdownMenu">
+                          <li><button type="button" class="dropdown-item active" data-copy-type="say">Copy say command</button></li>
+                          <li><button type="button" class="dropdown-item" data-copy-type="tellraw">Copy tellraw command</button></li>
+                          <li><button type="button" class="dropdown-item" data-copy-type="tell">Copy tell command</button></li>
+                        </ul>
+                      </div>
+                      <button
+                        type="button"
+                        class="btn btn-primary text-white"
+                        id="toolboxSendEveryoneBtn"
+                        title="Send formatted text to everyone"
+                      >
+                        <i class="bi bi-at"></i>
+                        <span class="ms-1">Send to everyone</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="row g-3 toolbox-panel-row">
+                    <div class="col-md-6 d-flex flex-column">
+                      <label class="form-label text-muted small" for="motdInput">Input</label>
+                      <textarea
+                        id="motdInput"
+                        class="form-control bg-dark border-secondary text-white"
+                        rows="9"
+                        placeholder="Type a Minecraft MOTD string (use § for formatting codes)."
+                        spellcheck="false"
+                      ></textarea>
+                    </div>
+                    <div class="col-md-6 d-flex flex-column">
+                      <label class="form-label text-muted small" for="motdPreview">Formatted Output</label>
+                    <div id="motdPreview" class="toolbox-preview border border-secondary bg-dark rounded">
+                        Paste or type text to preview formatting.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Extra bottom spacing for mobile -->
+          <!-- <div class="d-block d-md-none" style="height: 80px;"></div> -->
+        </div>
+      </div>
+    </div>

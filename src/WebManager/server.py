@@ -48,12 +48,14 @@ class WebManagerServer:
     def _normalize_macros_payload(payload):
         macros = []
         presets = []
+        variables = []
         if isinstance(payload, dict):
             macros = payload.get("macros") or []
             presets = payload.get("presets") or []
+            variables = payload.get("variables") or []
         elif isinstance(payload, list):
             macros = payload
-        return macros or [], presets or []
+        return macros or [], presets or [], variables or []
 
     def _render_index(self):
         return render_template("index.html")
@@ -72,8 +74,8 @@ class WebManagerServer:
                 return jsonify({"success": False, "error": "Macro provider unavailable"}), 503
             try:
                 payload = self.macros_provider()
-                macros, presets = self._normalize_macros_payload(payload)
-                return jsonify({"macros": macros, "presets": presets})
+                macros, presets, variables = self._normalize_macros_payload(payload)
+                return jsonify({"macros": macros, "presets": presets, "variables": variables})
             except Exception as exc:
                 return jsonify({"success": False, "error": str(exc)}), 500
 
@@ -88,8 +90,8 @@ class WebManagerServer:
                 if isinstance(new_macro, dict) and new_macro.get("error"):
                     return jsonify({"success": False, "error": new_macro["error"]}), 400
                 macros_payload = self.macros_provider() if self.macros_provider else []
-                macros, presets = self._normalize_macros_payload(macros_payload)
-                return jsonify({"success": True, "macro": new_macro, "macros": macros, "presets": presets})
+                macros, presets, variables = self._normalize_macros_payload(macros_payload)
+                return jsonify({"success": True, "macro": new_macro, "macros": macros, "presets": presets, "variables": variables})
             except Exception as exc:
                 return jsonify({"success": False, "error": str(exc)}), 500
 

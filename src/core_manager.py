@@ -28,6 +28,7 @@ TRIGGER_CANONICAL = {
 VALID_TRIGGERS = {
     "manual",
     "interval",
+    "time",
     "player_connected",
     "player_join",
     "player_leave",
@@ -278,14 +279,33 @@ class ManagerCore:
             self.settings["autostart_server"] = bool(data.get("enabled", False))
             save_settings(self.settings)
             return {"scheduled": True}
+        if action == "run_macro" and data:
+            commands = data.get("commands") or []
+            macro_id = data.get("macro_id")
+            player_name = data.get("player_name", "")
+            message = data.get("message", "")
+            if commands:
+                self._run_macro_commands(commands, macro_id=macro_id, player_name=player_name, message=message)
+                return {"success": True}
+            return {"error": "No commands provided"}
         return {"error": f"Unknown action {action}"}
 
     # ---- macros (web + core) ----
 
     def macro_payload(self):
-        return {"macros": self.macro_store.list(), "presets": []}
+        return {"macros": self.macro_store.list(), "presets": [], "variables": self.macro_store.list_variables()}
 
     def macro_creator_handler(self, payload: dict):
+        if payload.get("set_variables"):
+            variables = payload.get("variables")
+            if variables is None:
+                return {"error": "Variables payload is required"}
+            try:
+                cleaned = self.macro_store.set_variables(variables)
+            except Exception as exc:
+                return {"error": str(exc) or "Failed to save variables"}
+            return {"variables_saved": True, "variables": cleaned}
+
         if payload.get("delete"):
             macro_id = str(payload.get("id") or "").strip()
             if not macro_id:
@@ -315,6 +335,9 @@ class ManagerCore:
         chat_keyword = str(payload.get("chat_keyword") or "").strip()
         if trigger != "chat_keyword":
             chat_keyword = ""
+        time_of_day = str(payload.get("time_of_day") or "").strip()
+        if trigger != "time":
+            time_of_day = ""
         interval_seconds = 0
         try:
             interval_seconds = int(payload.get("interval_seconds", 0) or 0)
@@ -328,6 +351,7 @@ class ManagerCore:
                 icon=icon or "bi-gear-fill",
                 commands=commands,
                 interval_seconds=interval_seconds,
+                time_of_day=time_of_day,
                 trigger=trigger,
                 chat_keyword=chat_keyword,
             )
@@ -339,15 +363,42 @@ class ManagerCore:
             icon=icon or "bi-gear-fill",
             commands=commands,
             interval_seconds=interval_seconds,
+            time_of_day=time_of_day,
             trigger=trigger,
             chat_keyword=chat_keyword,
         )
 
-    def _run_macro_commands(self, commands: List[str], macro_id: Optional[str] = None) -> None:
+    def _run_macro_commands(self, commands: List[str], macro_id: Optional[str] = None, player_name: str = "", message: str = "") -> None:
         if macro_id:
             self.macro_store.increment_times_ran(macro_id)
+        resolved_vars = {}
+        try:
+            resolved_vars = self.macro_store.resolve_variables_for_run()
+        except Exception:
+            resolved_vars = {}
+        msg = str(message or "")
+        msg_text = msg
+        msg_keyword = ""
+        if msg:
+            msg_keyword = msg.split()[0]
+            msg_text = msg[len(msg_keyword):].lstrip() if msg.lower().startswith(msg_keyword.lower()) else msg
         for cmd in commands:
-            self.send_command(cmd)
+            rendered = (
+                str(cmd or "")
+                .replace("{player}", player_name)
+                .replace("{message}", msg)
+                .replace("{message_keyword}", msg_keyword)
+                .replace("{message_text}", msg_text)
+            )
+            if resolved_vars:
+                def _repl(match):
+                    key = match.group(1)
+                    if key in {"player", "message", "message_keyword", "message_text"}:
+                        return match.group(0)
+                    return str(resolved_vars.get(key, match.group(0)))
+
+                rendered = re.sub(r"\{([A-Za-z_][A-Za-z0-9_-]*)\}", _repl, rendered)
+            self.send_command(rendered)
 
     def _trigger_macros_for_event(self, trigger_event: str, player_name: Optional[str] = None) -> None:
         if not trigger_event:
@@ -369,8 +420,7 @@ class ManagerCore:
             commands = macro.get("commands") or []
             if not commands:
                 continue
-            rendered = [str(cmd or "").replace("{player}", name) for cmd in commands]
-            self._run_macro_commands(rendered, macro_id=macro.get("id"))
+            self._run_macro_commands(commands, macro_id=macro.get("id"), player_name=name)
 
     def _trigger_macros_for_chat_keyword(self, player_name: Optional[str] = None, message: str = "") -> None:
         msg = str(message or "")
@@ -398,8 +448,7 @@ class ManagerCore:
             commands = macro.get("commands") or []
             if not commands:
                 continue
-            rendered = [str(cmd or "").replace("{player}", name).replace("{message}", msg) for cmd in commands]
-            self._run_macro_commands(rendered, macro_id=macro.get("id"))
+            self._run_macro_commands(commands, macro_id=macro.get("id"), player_name=name, message=msg)
 
     # ---- properties/backups ----
 

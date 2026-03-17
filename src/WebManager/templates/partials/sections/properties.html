@@ -1,0 +1,43 @@
+          <section id="section-properties" class="d-none">
+          <div class="page-header">
+            <h2 class="h4 mb-0">Server Properties</h2>
+            <div class="d-flex align-items-center gap-2">
+              <div class="text-muted small" id="propsCount">0 items</div>
+              <button class="btn btn-sm btn-primary" id="newPropertyBtn" type="button">
+                <i class="bi bi-plus-lg me-1"></i>New Property
+              </button>
+            </div>
+          </div>
+            <div class="section-body">
+                <div id="noServerPropertiesWarning" class="alert alert-warning border-0 d-none" role="alert">
+                  <div class="d-flex gap-2 align-items-start">
+                    <i class="bi bi-exclamation-triangle-fill mt-1"></i>
+                    <div>
+                      <div class="fw-semibold">No server properties found.</div>
+                      <div class="small">
+                        Make sure your server folder is configured correctly and contains a valid <code>server.properties</code>.
+                        If this looks wrong, please file an issue and include your manager logs and server folder path.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="table-container table-flush">
+                  <div class="table-responsive">
+                    <table class="table table-dark table-hover mb-0 align-middle px-2 table-col-borders">
+                      <thead class="table-dark">
+                        <tr>
+                          <th>Property</th>
+                          <th>Value</th>
+                          <th class="d-none d-md-table-cell">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody id="propertiesTableBody">
+                        <!-- Properties populated by JS -->
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+            </div>
+          </section>
+
+          <!-- Backups Section -->
